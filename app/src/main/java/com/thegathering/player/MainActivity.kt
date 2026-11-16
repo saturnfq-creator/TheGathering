@@ -17,6 +17,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -63,6 +64,20 @@ class MainActivity : ComponentActivity() {
         window.statusBarColor = Color.rgb(35, 28, 24)
         window.navigationBarColor = Color.rgb(20, 18, 17)
         createWebView()
+        // Android gesture navigation and the classic Back key share one path.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (!pageReady || destroyed || !::webView.isInitialized) {
+                    moveTaskToBack(true)
+                    return
+                }
+                webView.evaluateJavascript(
+                    "(function(){try{return !!(window.appNavigateBack && window.appNavigateBack());}catch(e){return false;}})()"
+                ) { consumed ->
+                    if (!destroyed && consumed != "true") moveTaskToBack(true)
+                }
+            }
+        })
         connectPlayer()
     }
 

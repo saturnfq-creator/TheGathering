@@ -83,4 +83,32 @@ assert(!html.includes('menuFavorite')&&!html.includes('id="favorite"'));
 assert(!html.includes('ПЕРЕТАСКИВАЙ ЗА')&&!html.includes('Главная'));
 assert(html.includes('data-tab="Плеер"'));
 assert(html.includes('queue-drag-ghost'));
-console.log('PASS v0.4: queue reorder, play next, album queue/play, state guard, smooth playback clock, simplified favorites-free chrome');
+
+// Bottom-sheet states and Android back contract.
+assert.equal(expr('sheetStage'),'closed');
+expr('setQueueSheet("partial")');
+assert.equal(expr('sheetStage'),'partial');
+expr('setQueueSheet("full")');
+assert.equal(expr('sheetStage'),'full');
+assert.equal(expr('appNavigateBack()'),true);
+assert.equal(expr('sheetStage'),'closed');
+assert.equal(expr('appNavigateBack()'),false); // root is delegated to Android Activity
+// The virtual deck maps depth offsets forward from the currently playing track.
+expr('current="a";order=["a","b","c","d"];');
+assert.equal(expr('deckIdAt(0)'),'a');
+assert.equal(expr('deckIdAt(2)'),'c');
+assert.equal(expr('deckIdAt(-1)'),null);
+assert.equal(expr('deckIdAt(4)'),null);
+// UI contract: the classic X closures are gone, depth deck and native back exist.
+assert(html.includes('id="queueGrab"'));
+assert(!html.includes('id="close"'));
+assert(!html.includes('id="closeLibrary"'));
+assert(html.includes('.album.prev-card{transform:translate3d(-105%'));
+const java=fs.readFileSync(__dirname+'/../app/src/main/java/com/thegathering/player/MainActivity.kt','utf8');
+assert(java.includes('onBackPressedDispatcher.addCallback'));
+assert(java.includes('window.appNavigateBack'));
+assert(code.includes('queueList.setPointerCapture(e.pointerId)'));
+assert(code.includes("queueList.addEventListener('lostpointercapture'"));
+assert(code.includes('function paintDeck('));
+
+console.log('PASS v0.5: queue, playback clock, virtual depth deck, bottom sheet and Android back contracts');

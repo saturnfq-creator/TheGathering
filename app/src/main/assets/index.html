@@ -167,6 +167,27 @@ button,svg{-webkit-user-select:none;user-select:none;}
 .queue-drag-ghost .handle{cursor:grabbing;}
 @media(prefers-reduced-motion:reduce){.track-title.marquee #titleInner{animation:none;}
   .album:not(.gesture){transition-duration:110ms!important}}
+
+/* v0.5: interactive sheet, bounded deck and discreet waveform optics */
+.stack{touch-action:none;}
+.album.prev-card{transform:translate3d(-105%,0,0) rotate(-8deg) scale(.94);}
+.album.leaving-right{z-index:3;transform:translate3d(108%,0,0) rotate(8deg) scale(.94);opacity:0;}
+.album.deck-card{filter:none!important;mask-image:none!important;-webkit-mask-image:none!important;
+  transition:transform 280ms cubic-bezier(.2,.75,.2,1),opacity 260ms ease;}
+.stack.depth-drag .album.deck-card{transition:none!important;}
+.stack.deck-mode .album.deck-card{backface-visibility:hidden;}
+.sheet{padding-top:14px;transition:height .33s cubic-bezier(.2,.75,.22,1),transform .34s cubic-bezier(.2,.75,.22,1);}
+.overlay.expanded .sheet{height:calc(100% - env(safe-area-inset-top,0px) - 10px);border-radius:24px 24px 0 0;}
+.sheet-grab-area{touch-action:none;flex:0 0 30px;display:flex;align-items:flex-start;justify-content:center;cursor:grab;user-select:none;}
+.sheet-grab-area:active{cursor:grabbing;}
+.sheet-grip{width:43px;height:5px;border-radius:8px;background:linear-gradient(90deg,#998e7e,#eedbc6,#998e7e);box-shadow:0 1px 4px #0005;}
+.sheet-header{flex-shrink:0;}
+.queue-list{touch-action:pan-y;}
+.queue-drag-ghost{transition:none!important;}
+.queue-drag-ghost.settling{transition:transform 145ms cubic-bezier(.2,.8,.2,1),opacity 145ms!important;}
+.queue-item.drag-settling{opacity:0;}
+.timeline{isolation:isolate;}
+.timeline canvas{border-radius:inherit;}
 </style></head><body><main class="screen" id="screen">
 <header class="header"><div class="eyebrow">СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
 <div class="stack" id="stack" aria-label="Свайп влево — следующий трек, вправо — предыдущий"></div>
@@ -175,9 +196,9 @@ button,svg{-webkit-user-select:none;user-select:none;}
 <button class="play" id="play" aria-label="Воспроизведение или пауза"></button>
 <div class="times"><span id="elapsed">1:42</span><span id="duration">4:18</span></div>
 <div class="actions"><button class="action" id="shuffle" aria-label="Случайный порядок"><svg viewBox="0 0 24 24"><path d="M3 4c7 0 9 16 18 16m0 0-4-4m4 4-4 2M3 20c4 0 6-4 8-8m3-4c2-3 4-4 7-4m0 0-4-2m4 2-4 4"/></svg></button></div>
-<div class="overlay" id="overlay"><div class="sheet"><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="close" id="close">×</button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
+<div class="overlay" id="overlay" aria-hidden="true"><div class="sheet" id="queueSheet" role="dialog" aria-label="Очередь воспроизведения"><div class="sheet-grab-area" id="queueGrab" aria-label="Свайп вверх — развернуть, вниз — свернуть"><span class="sheet-grip"></span></div><div class="sheet-header"><h2>Очередь воспроизведения</h2></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
 <div class="library-panel" id="libraryPanel">
-  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><button class="close-library" id="closeLibrary" aria-label="Закрыть библиотеку">×</button></div>
+  <div class="library-head"><h2 id="panelHeading">Библиотека</h2></div>
   <div id="libraryBrowse">
     <div class="library-search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><input class="search-input" id="librarySearch" placeholder="Найти трек, альбом или исполнителя" autocomplete="off" aria-label="Поиск музыки"/><button id="clearSearch" aria-label="Очистить поиск" hidden>×</button></div>
     <div class="library-tabs" id="libraryTabs"><button class="lib-tab active" data-mode="albums">Альбомы</button><button class="lib-tab" data-mode="artists">Исполнители</button><button class="lib-tab" data-mode="tracks">Треки</button></div>
