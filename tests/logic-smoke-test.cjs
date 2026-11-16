@@ -7,7 +7,7 @@ const code = fs.readFileSync(__dirname+'/../app/src/main/assets/app.js','utf8');
 const fake = () => ({
   style:{setProperty(){}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
   textContent:'',innerHTML:'',value:'',attributes:{},
-  setAttribute(){},addEventListener(){},setPointerCapture(){},
+  setAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
   replaceChildren(...els){this.children=els},appendChild(el){this.children.push(el)},append(){},remove(){},
   querySelector(){return null},querySelectorAll(){return []},
   getBoundingClientRect(){return {left:0,top:0,width:100,height:50}},
@@ -23,12 +23,13 @@ const native = {
   seekTo:seconds=>calls.push(['seekTo',seconds]),
   reorderQueue:json=>calls.push(['reorderQueue',json])
 };
+let testClock=10000;
 const sandbox = {
   document:{querySelector:get,querySelectorAll:()=>[],createElement:()=>fake(),createDocumentFragment:()=>fake(),hidden:false,activeElement:fake(),addEventListener(){}},
   window:{AndroidBridge:native,devicePixelRatio:1},
   localStorage:{getItem:()=>null,setItem(){}},
   requestAnimationFrame(){},clearTimeout(){},setTimeout(){return 1},
-  console,Intl,Map,Set,Math,Number,String,JSON,Date,URL,
+  console,Intl,Map,Set,Math,Number,String,JSON,Date,URL,performance:{now:()=>testClock},
 };
 sandbox.window.document=sandbox.document;
 vm.createContext(sandbox);
@@ -56,4 +57,24 @@ assert.equal(expr('pendingNativeId'),'c');
 expr('nativePlaybackState({id:"c",position:15,playWhenReady:true,duration:60});');
 assert.equal(expr('pendingNativeId'),null);
 assert.equal(expr('currentPosition'),15);
-console.log('PASS: upcoming order, queue drag reorder, native synchronization, stale-event guard');
+// Insert a single song next without stopping currently playing song.
+expr('current="b";order=["b","a","c","d"];pendingNativeId=null;nativeQueueReady=true;');
+calls.length=0;
+assert.equal(expr('putNext("d")'),true);
+assert.equal(JSON.stringify(expr('order')),JSON.stringify(['b','d','a','c']));
+assert.deepEqual(calls.pop(),['reorderQueue',JSON.stringify(['b','d','a','c'])]);
+// Move an entire album block immediately after the current track.
+expr('moveAlbumNext(["c","a"])');
+assert.equal(JSON.stringify(expr('order')),JSON.stringify(['b','c','a','d']));
+assert.deepEqual(calls.pop(),['reorderQueue',JSON.stringify(['b','c','a','d'])]);
+// Album playback must start on its first song and place the rest first.
+expr('playEntireAlbum(["a","b"])');
+assert.equal(expr('current'),'a');
+assert.equal(JSON.stringify(expr('order')),JSON.stringify(['a','b','c','d']));
+assert.equal(calls.pop()[0],'playQueue');
+// Position between backend updates advances in fractional steps, not 650 ms jumps.
+expr('pendingNativeId=null;nativePlaybackState({id:"a",position:4,playWhenReady:true,ready:true,buffering:false,duration:60})');
+testClock+=420;
+assert(Math.abs(expr('visiblePosition()')-4.42)<.01);
+assert.equal(expr('groupLibrary("albums").length'),2);
+console.log('PASS: queue reorder, play next, album queue/play, state guard, smooth playback clock');

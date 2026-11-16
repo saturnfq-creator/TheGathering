@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.2: Media3 is the source of truth for native playback.
+// The Gathering 0.3: stable cover cards, interpolated timeline, unified library and native Media3 queue.
 // Rendering is intentionally capped and never keeps obsolete cover layers alive.
 const $ = selector => document.querySelector(selector);
 const native = window.AndroidBridge || null;
@@ -28,7 +28,15 @@ let libraryMode = 'albums';
 let searchTerm = '';
 let stackAnimating = false;
 let scrub = null;
+let pendingSeek = null;
 let lastWaveTime = 0;
+let lastNativeStamp = 0;
+let stackCards = null;
+let stackTimer = null;
+let queuedNavigation = 0;
+let stackNeedsRebuild = false;
+let activeAlbumKey = null;
+let trackMenuId = null;
 let lastDisplayedSecond = -1;
 let importedCounter = 0;
 let queueDisplayLimit = 65;
@@ -65,67 +73,124 @@ function updatePlay() {
     : '<svg viewBox="0 0 24 24"><path d="M7 4 Q7 3 9 4 L20 11 Q22 12 20 13 L9 20 Q7 21 7 19Z"/></svg>';
   $('#play').setAttribute('aria-label', playing ? 'Пауза' : 'Воспроизвести');
 }
-function updateTimes() {
-  const t = track(); if (!t) return;
-  const duration = (playerState && playerState.id === String(current) && playerState.duration > 0)
-    ? playerState.duration : t.duration;
-  const seconds = scrub ? scrub.progress * duration : currentPosition;
+function activeDuration() {
+  const t = track();
+  return Math.max(0,Number(playerState?.id === String(current) && playerState.duration > 0
+    ? playerState.duration : (t?.duration || 0)) || 0);
+}
+function visiblePosition(now = performance.now()) {
+  if (scrub) return scrub.progress * activeDuration();
+  if (track()?.url && Number.isFinite(audio.currentTime)) return audio.currentTime;
+  let pos = currentPosition;
+  if (track()?.uri && playerState?.id === String(current) &&
+      playerState.playWhenReady && playerState.ready && !playerState.buffering && lastNativeStamp) {
+    pos += Math.max(0,Math.min(2,(now-lastNativeStamp)/1000));
+  }
+  const duration = activeDuration();
+  return Math.max(0,duration>0 ? Math.min(duration,pos) : pos);
+}
+function updateTimes(now = performance.now()) {
+  const t = track();if (!t) return;
+  const duration = activeDuration();
+  const seconds = visiblePosition(now);
   const wholeSecond = Math.floor(seconds);
   if (wholeSecond !== lastDisplayedSecond) {
     $('#elapsed').textContent = fmt(seconds);
     lastDisplayedSecond = wholeSecond;
   }
   $('#duration').textContent = fmt(duration);
-  $('#timeline').setAttribute('aria-valuenow', String(Math.floor(seconds)));
-  $('#timeline').setAttribute('aria-valuemax', String(Math.floor(duration)));
+  $('#timeline').setAttribute('aria-valuenow',String(Math.floor(seconds)));
+  $('#timeline').setAttribute('aria-valuemax',String(Math.floor(duration)));
 }
-function stackMarkup() {
-  const t = track(); if (!t) return;
-  const stack = $('#stack');
-  const position = index();
-  const ids = order.length > 1 ? [
-    order[(position+2)%order.length],
-    order[(position+1)%order.length],
-    current
-  ] : [current];
-  // Constant number of nodes: no accumulating blur layers or delayed removals.
-  const frag = document.createDocumentFragment();
-  ids.forEach((id, i) => {
-    const item = track(id); if (!item) return;
-    const card = document.createElement('div');
-    card.className = 'album ' + (i === ids.length-1 ? 'front' : i===0 && ids.length===3 ? 'back2' : 'back1');
-    card.dataset.id = id;
-    card.innerHTML = art(item,i === ids.length-1);
-    frag.appendChild(card);
-  });
-  stack.replaceChildren(frag);
+function updatePlayerChrome() {
+  const t = track();if (!t) return;
   $('#title').textContent = t.artist + ' - ' + t.title;
-  $('#screen').style.setProperty('--glow', (t.colors || DEFAULT_COLORS)[0]);
-  $('#favorite').classList.toggle('liked', favorites.has(String(current)));
-  lastDisplayedSecond = -1;
+  $('#favorite').classList.toggle('liked',favorites.has(String(current)));
+  lastDisplayedSecond=-1;
   updateTimes();
 }
-function updateStack(direction = 0) {
-  const front = $('#stack .front');
-  if (!direction || !front || stackAnimating || typeof front.animate !== 'function') {
-    if (!stackAnimating) stackMarkup();
-    return;
+function makeStackCard(id,role) {
+  const card=document.createElement('div');
+  card.className='album '+role;
+  const item=track(id);
+  if(item){card.dataset.id=String(item.id);card.innerHTML=art(item,role!=='back2');}
+  return card;
+}
+function stackMarkup() {
+  if(stackTimer){clearTimeout(stackTimer);stackTimer=null;}
+  stackAnimating=false;
+  stackNeedsRebuild=false;
+  const n=order.length,p=index();
+  if(!n || p<0)return;
+  const at=offset=>order[(p+offset+n)%n];
+  const cards={
+    back2:makeStackCard(at(2),'back2'),
+    back1:makeStackCard(at(1),'back1'),
+    front:makeStackCard(current,'front'),
+    prev:makeStackCard(at(-1),'prev-card')
+  };
+  $('#stack').replaceChildren(cards.back2,cards.back1,cards.front,cards.prev);
+  stackCards=cards;
+  updatePlayerChrome();
+}
+function setCardRole(card,role,recycle=false) {
+  card.className='album '+role+(recycle?' recycle':'');
+  card.style.transform='';
+}
+function recycleCard(card,id,role) {
+  const t=track(id);
+  setCardRole(card,role,true);
+  if(t && card.dataset.id!==String(t.id)) {
+    card.dataset.id=String(t.id);
+    card.innerHTML=art(t,role==='prev-card');
   }
-  stackAnimating = true;
-  const sign = direction > 0 ? -1 : 1;
-  const animation = front.animate([
-    {transform:'translate3d(0,0,0) scale(1)',opacity:1},
-    {transform:'translate3d(' + (sign*66) + '%,0,0) rotate(' + (sign*7) + 'deg) scale(.95)',opacity:0}
-  ], {duration:210,easing:'cubic-bezier(.32,.76,.26,1)',fill:'forwards'});
-  animation.finished.catch(() => {}).then(() => {
-    stackAnimating = false;
-    stackMarkup(); // display only the latest requested track, even after rapid swipes
-    const incoming = $('#stack .front');
-    if (incoming && typeof incoming.animate === 'function') {
-      incoming.animate([{opacity:.85,transform:'scale(.98)'},{opacity:1,transform:'scale(1)'}],
-        {duration:145,easing:'ease-out'});
-    }
+  requestAnimationFrame(()=>{
+    if(card.isConnected)card.classList.remove('recycle');
   });
+}
+function updateStack(direction=0) {
+  updatePlayerChrome();
+  if(!direction || !stackCards || order.length<2){stackMarkup();return;}
+  if(stackAnimating){stackNeedsRebuild=true;return;}
+  const old=stackCards;
+  const match=direction>0 ? old.back1.dataset.id===String(current) : old.prev.dataset.id===String(current);
+  if(!match){stackMarkup();return;}
+  stackAnimating=true;
+  const pos=index(),n=order.length;
+  const at=offset=>order[(pos+offset+n)%n];
+  if(direction>0){
+    // Both the incoming cover and the second card already have decoded DOM images.
+    // No front-card replacement while the animation is in progress.
+    old.front.getBoundingClientRect();
+    setCardRole(old.front,'leaving-left');
+    setCardRole(old.back1,'front');
+    setCardRole(old.back2,'back1');
+    recycleCard(old.prev,at(2),'back2');
+    stackCards={front:old.back1,back1:old.back2,back2:old.prev,prev:old.front};
+  }else{
+    old.front.getBoundingClientRect();
+    setCardRole(old.prev,'front');
+    setCardRole(old.front,'back1');
+    setCardRole(old.back1,'back2');
+    setCardRole(old.back2,'prev-card',true);
+    stackCards={front:old.prev,back1:old.front,back2:old.back1,prev:old.back2};
+  }
+  stackTimer=setTimeout(()=>{
+    stackTimer=null;
+    if(!stackCards)return;
+    if(direction>0){
+      recycleCard(stackCards.prev,at(-1),'prev-card');
+    }else{
+      recycleCard(stackCards.prev,at(-1),'prev-card');
+    }
+    stackAnimating=false;
+    if(stackNeedsRebuild || stackCards.front.dataset.id!==String(current))stackMarkup();
+    if(queuedNavigation){
+      const dir=queuedNavigation;
+      queuedNavigation=0;
+      setTimeout(()=>dir>0?next():prev(),0);
+    }
+  },500);
 }
 function nativePlaylist() {
   return order.map(id => track(id)).filter(t => t && t.uri).map(t => ({
@@ -141,6 +206,8 @@ function choose(id, direction = 1, fromNative = false) {
     if (!fromNative) history.push(old);
     current = id;
     currentPosition = 0;
+    pendingSeek=null;
+    lastNativeStamp=0;
     playerState = null;
   }
   const t = track();
@@ -159,6 +226,7 @@ function choose(id, direction = 1, fromNative = false) {
     } else if (t.url) {
       pendingNativeId = null;
       if (native) native.setPlaying(false);
+      nativeQueueReady=false;
       audio.src = t.url;
       audio.load();
       playing = true;
@@ -174,6 +242,7 @@ function choose(id, direction = 1, fromNative = false) {
   renderQueue();
 }
 function next() {
+  if(stackAnimating){queuedNavigation=1;return;}
   if (order.length < 2) return;
   let id;
   if (shuffle) {
@@ -183,6 +252,7 @@ function next() {
   choose(id,1);
 }
 function prev() {
+  if(stackAnimating){queuedNavigation=-1;return;}
   if (order.length < 2) return;
   const candidate = history.length ? history.pop() : order[(index()-1+order.length)%order.length];
   choose(candidate,-1);
@@ -230,6 +300,65 @@ function renderQueue() {
   list.appendChild(fragment);
   $('#queueCount').textContent = 'В очереди: ' + upcoming.length;
 }
+function refreshStackForQueue() {
+  if(stackAnimating)stackNeedsRebuild=true;else stackMarkup();
+}
+function syncQueueToNative() {
+  if(!native || !nativeQueueReady || !track()?.uri)return;
+  const ids=order.filter(id=>!!track(id)?.uri);
+  native.reorderQueue(JSON.stringify(ids));
+}
+function putNext(id) {
+  id=String(id);
+  if(!lookup.has(id))return false;
+  if(id===String(current)){toast('Этот трек уже играет');return false;}
+  const rest=upcomingIds().filter(x=>x!==id);
+  order=[String(current),id,...rest];
+  refreshStackForQueue();
+  syncQueueToNative();
+  renderQueue();
+  toast('Будет играть следующим');
+  return true;
+}
+function sortAlbumItems(items) {
+  return [...items].sort((a,b)=>(a.trackNumber||0)-(b.trackNumber||0)||
+    a.title.localeCompare(b.title,'ru',{numeric:true}));
+}
+function moveAlbumNext(ids) {
+  const unique=[...new Set(ids.map(String))].filter(id=>lookup.has(id)&&id!==String(current));
+  if(!unique.length)return;
+  const rest=upcomingIds().filter(id=>!unique.includes(id));
+  order=[String(current),...unique,...rest];
+  refreshStackForQueue();
+  syncQueueToNative();
+  renderQueue();
+  toast('Альбом добавлен следующим в очередь');
+}
+function playEntireAlbum(ids) {
+  const unique=[...new Set(ids.map(String))].filter(id=>lookup.has(id));
+  if(!unique.length)return;
+  const rest=order.filter(id=>!unique.includes(id));
+  order=[...unique,...rest];
+  current=unique[0];currentPosition=0;lastNativeStamp=0;playerState=null;pendingSeek=null;
+  pendingNativeId=String(current);
+  stackMarkup();
+  updatePlay();
+  renderQueue();
+  const t=track();
+  if(t?.uri && native){
+    audio.pause();
+    nativeQueueReady=true;
+    native.playQueue(JSON.stringify(nativePlaylist()),String(current));
+    playing=true;
+  }else if(t?.url){
+    nativeQueueReady=false;
+    if(native)native.setPlaying(false);
+    audio.pause();audio.src=t.url;audio.load();
+    audio.play().then(()=>{playing=true;updatePlay();}).catch(()=>{playing=false;updatePlay();toast('Не удалось открыть альбом');});
+  }
+  updatePlay();
+  closeLibrary();
+}
 function reorderUpcoming(draggedId, hoveredId) {
   const future = upcomingIds();
   const from = future.indexOf(String(draggedId));
@@ -237,9 +366,8 @@ function reorderUpcoming(draggedId, hoveredId) {
   if (from < 0 || to < 0 || from === to) return;
   future.splice(to,0,future.splice(from,1)[0]);
   order = [current,...future]; // current remains pinned to the top of the queue
-  if (native && nativeQueueReady && order.every(id => !!track(id)?.uri)) {
-    native.reorderQueue(JSON.stringify(order));
-  }
+  refreshStackForQueue();
+  syncQueueToNative();
   renderQueue();
   toast('Порядок воспроизведения обновлён');
 }
@@ -303,6 +431,8 @@ timeline.addEventListener('pointerup', e => {
   const seconds = Math.max(0,Math.min(duration,scrub.progress * duration));
   scrub = null;
   currentPosition = seconds;
+  pendingSeek={id:String(current),target:seconds,until:performance.now()+1600};
+  lastNativeStamp=performance.now();
   if (track()?.uri && native) native.seekTo(seconds);
   else if (track()?.url && Number.isFinite(audio.duration)) audio.currentTime = seconds;
   lastDisplayedSecond = -1;
@@ -359,21 +489,23 @@ stack.addEventListener('pointermove', e => {
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
   const front = stack.querySelector('.front');
   if (front && Math.abs(dx)>Math.abs(dy)*1.4) {
-    front.style.transform='translate3d('+Math.max(-120,Math.min(120,dx*.5))+'px,0,0)';
+    front.classList.add('dragging');
+    front.style.transform='translate3d('+Math.max(-145,Math.min(145,dx*.72))+'px,0,0) rotate('+(dx*.02)+'deg)';
   }
 });
 stack.addEventListener('pointerup', e => {
   if (!swipe || e.pointerId !== swipe.pointer) return;
   const dx = e.clientX-swipe.x, dy = e.clientY-swipe.y;
   swipe = null;
-  const front = stack.querySelector('.front'); if (front) front.style.transform='';
+  const front = stack.querySelector('.front');
+  if(front){front.classList.remove('dragging');front.getBoundingClientRect();}
   if (Math.abs(dx)>48 && Math.abs(dx)>Math.abs(dy)*1.1) {
     if (dx<0) next(); else prev();
-  }
+  }else if(front){ front.style.transform=''; }
 });
 stack.addEventListener('pointercancel', () => {
   swipe = null;
-  const front = stack.querySelector('.front'); if (front) front.style.transform='';
+  const front = stack.querySelector('.front'); if(front){front.classList.remove('dragging');front.style.transform='';}
 });
 document.addEventListener('keydown', e => {
   if ($('#overlay').classList.contains('open')) return;
@@ -394,16 +526,26 @@ function nativePlaybackState(state) {
   if (itemId && track(itemId)) {
     nativeQueueReady = true;
     if (current !== itemId && !track()?.url) {
+      const oldIndex=index();
+      const newIndex=order.indexOf(itemId);
+      const direction=(newIndex===(oldIndex+1)%order.length)?1:
+        (oldIndex===(newIndex+1)%order.length)?-1:0;
       current = itemId;
       currentPosition = 0;
       playerState = null;
-      updateStack(0); // platform media controls and auto-next must update the UI
+      pendingSeek=null;
+      updateStack(direction); // also animate native auto-next when it is adjacent
       renderQueue();
     }
   }
   if (track()?.uri && itemId === String(current)) {
     playerState = {...state,id:itemId};
-    if (!scrub) currentPosition = Math.max(0,Number(state.position)||0);
+    if (!scrub) {
+      const incoming=Math.max(0,Number(state.position)||0);
+      const seeking=pendingSeek?.id===itemId && performance.now()<pendingSeek.until &&
+        Math.abs(incoming-pendingSeek.target)>1.75;
+      if(!seeking){pendingSeek=null;currentPosition=incoming;lastNativeStamp=performance.now();}
+    }
     playing = !!state.playWhenReady;
     updatePlay();
     updateTimes();
@@ -417,121 +559,172 @@ function nativePlaybackError(message) {
 window.nativePlaybackState = nativePlaybackState;
 window.nativePlaybackError = nativePlaybackError;
 
-// Lazy library groups; no thousands of animated album cards on the initial screen.
+// Unified library: search above Albums / Artists / Tracks, with a tile-based album browser.
 function libraryRow(t) {
-  const row = document.createElement('button');
-  row.className='library-row';
-  row.innerHTML='<span class="lib-cover">'+art(t)+'</span><span><strong>'+esc(t.artist+' — '+t.title)+
-    '</strong><br><small>'+esc(t.album||'Без альбома')+' · '+fmt(t.duration)+'</small></span>';
-  row.onclick=()=>{choose(t.id,1);closeLibrary();};
-  return row;
+  const row=document.createElement('div');row.className='library-row';
+  const main=document.createElement('button');main.className='lib-row-main';
+  main.innerHTML='<span class="lib-cover">'+art(t)+'</span><span class="lib-track-info"><strong>'+esc(t.artist+' — '+t.title)+
+    '</strong><small>'+esc(t.album||'Без альбома')+' · '+fmt(t.duration)+'</small></span>';
+  main.onclick=()=>{choose(t.id,1);closeLibrary();};
+  const menu=document.createElement('button');menu.className='lib-more';menu.type='button';
+  menu.setAttribute('aria-label','Действия с треком '+t.title);menu.textContent='⋮';
+  menu.onclick=e=>{e.stopPropagation();openTrackMenu(t.id);};
+  row.append(main,menu);return row;
 }
+function albumKey(t){return Number(t.albumId)>0?'album:'+t.albumId:'fallback:'+t.artist+'::'+(t.album||'Без альбома');}
 function groupLibrary(mode) {
-  const groups = new Map();
-  for (const t of tracks) {
-    if (!t.uri && !t.url) continue;
-    const key = mode === 'albums'
-      ? (Number(t.albumId)>0 ? String(t.albumId) : t.artist+'::'+(t.album||'Без альбома'))
-      : t.artist;
-    if (!groups.has(key)) groups.set(key,[]);
+  const groups=new Map();
+  for(const t of tracks){
+    if(!t.uri&&!t.url)continue;
+    const key=mode==='albums'?albumKey(t):t.artist;
+    if(!groups.has(key))groups.set(key,[]);
     groups.get(key).push(t);
   }
-  const output = [...groups.values()];
-  const collator = new Intl.Collator('ru',{numeric:true,sensitivity:'base'});
-  output.sort((a,b)=>collator.compare(
-    mode==='albums' ? a[0].album||'Без альбома' : a[0].artist,
-    mode==='albums' ? b[0].album||'Без альбома' : b[0].artist
-  ));
+  const output=[...groups.values()];
+  const collator=new Intl.Collator('ru',{numeric:true,sensitivity:'base'});
+  output.sort((a,b)=>collator.compare(mode==='albums'?(a[0].album||'Без альбома'):a[0].artist,
+    mode==='albums'?(b[0].album||'Без альбома'):b[0].artist));
   return output;
 }
-function renderNativeLibrary(mode = libraryMode) {
-  libraryMode = mode;
-  $('#panelHeading').textContent = 'Библиотека';
-  $('#libraryTabs').hidden = false;
-  document.querySelectorAll('.lib-tab').forEach(b => {
-    b.classList.toggle('active',b.dataset.mode===mode);
-  });
-  const box = $('#nativeLibraryList');
-  box.replaceChildren();
-  const available = tracks.filter(t => t.uri || t.url);
-  if (!available.length) {
-    box.innerHTML='<p class="muted">Музыка не найдена. Проверь разрешение на аудиофайлы.</p>';
-    return;
+function createAlbumTile(items) {
+  const t=items[0];
+  const tile=document.createElement('button');tile.className='album-tile';tile.type='button';
+  tile.innerHTML='<span class="album-tile-art">'+art(t)+'</span><strong>'+esc(t.album||'Без альбома')+
+    '</strong><small>'+esc(t.artist)+' · '+items.length+' тр.</small>';
+  tile.onclick=()=>openAlbum(items);
+  return tile;
+}
+function appendBatched(box,items,make,chunk=80) {
+  let shown=0;
+  const more=document.createElement('button');more.className='queue-more';
+  const add=()=>{
+    more.remove();
+    const fragment=document.createDocumentFragment();
+    const until=Math.min(items.length,shown+chunk);
+    for(;shown<until;shown++)fragment.appendChild(make(items[shown]));
+    box.append(fragment);
+    if(shown<items.length){more.textContent='Показать ещё ('+(items.length-shown)+')';box.append(more);}
+  };
+  more.onclick=add;add();
+}
+function openAlbum(items) {
+  const songs=sortAlbumItems(items);
+  if(!songs.length)return;
+  activeAlbumKey=albumKey(songs[0]);
+  $('#libraryBrowse').hidden=true;
+  $('#albumDetail').hidden=false;
+  const root=$('#albumDetailBody');root.replaceChildren();
+  const t=songs[0];
+  const hero=document.createElement('div');hero.className='album-hero';
+  hero.innerHTML='<span class="album-tile-art">'+art(t,true)+'</span><div><h3>'+esc(t.album||'Без альбома')+
+    '</h3><p>'+esc(t.artist)+'<br>'+songs.length+' треков</p></div>';
+  const actions=document.createElement('div');actions.className='album-detail-actions';
+  const play=document.createElement('button');play.className='album-play';play.textContent='▶ Слушать альбом';
+  play.onclick=()=>playEntireAlbum(songs.map(x=>x.id));
+  const nextButton=document.createElement('button');nextButton.className='album-queue';
+  nextButton.textContent='＋ Играть следующим';nextButton.onclick=()=>moveAlbumNext(songs.map(x=>x.id));
+  actions.append(play,nextButton);
+  const list=document.createElement('div');list.className='album-tracks';
+  songs.forEach(song=>list.append(libraryRow(song)));
+  root.append(hero,actions,list);
+  $('#libraryPanel').scrollTop=0;
+}
+function closeAlbum(){activeAlbumKey=null;$('#albumDetail').hidden=true;$('#libraryBrowse').hidden=false;}
+function renderSearchMatches() {
+  const box=$('#nativeLibraryList');box.replaceChildren();
+  const term=searchTerm.trim().toLocaleLowerCase('ru');
+  $('#libraryTabs').hidden=!!term;
+  if(!term){renderNativeLibrary(libraryMode);return;}
+  const matches=tracks.filter(t=>(t.uri||t.url)&&((t.title||'')+' '+(t.artist||'')+' '+(t.album||''))
+    .toLocaleLowerCase('ru').includes(term));
+  if(!matches.length){box.innerHTML='<p class="muted">Ничего не найдено. Попробуй другой запрос.</p>';return;}
+  const header=document.createElement('p');header.className='muted';
+  header.textContent='Найдено треков: '+matches.length;box.append(header);
+  appendBatched(box,matches,t=>libraryRow(t),90);
+}
+function renderNativeLibrary(mode=libraryMode) {
+  libraryMode=mode;
+  $('#panelHeading').textContent='Библиотека';
+  if(activeAlbumKey)closeAlbum();
+  $('#libraryTabs').hidden=!!searchTerm.trim();
+  document.querySelectorAll('.lib-tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  if(searchTerm.trim()){renderSearchMatches();return;}
+  const box=$('#nativeLibraryList');box.replaceChildren();
+  const available=tracks.filter(t=>t.uri||t.url);
+  if(!available.length){box.innerHTML='<p class="muted">Музыка не найдена. Проверь разрешение на аудиофайлы.</p>';return;}
+  if(mode==='tracks'){
+    const sorted=[...available].sort((a,b)=>(a.artist+' '+a.title).localeCompare(b.artist+' '+b.title,'ru'));
+    appendBatched(box,sorted,libraryRow,90);return;
   }
-  if (mode === 'tracks') {
-    const sorted = [...available].sort((a,b)=>(a.artist+' '+a.title).localeCompare(b.artist+' '+b.title,'ru'));
-    let shown=0;
-    const addRows=()=>{
-      const fragment=document.createDocumentFragment();
-      const until=Math.min(sorted.length,shown+85);
-      for (;shown<until;shown++) fragment.appendChild(libraryRow(sorted[shown]));
-      more.remove();box.append(fragment);
-      if (shown<sorted.length) box.append(more);
-    };
-    const more=document.createElement('button');more.className='queue-more';more.onclick=addRows;
-    more.textContent='Показать ещё';addRows();
-    return;
+  const groups=groupLibrary(mode);
+  if(mode==='albums'){
+    const grid=document.createElement('div');grid.className='album-grid';box.append(grid);
+    appendBatched(grid,groups,createAlbumTile,72);return;
   }
-  const groups = groupLibrary(mode);
-  for (const items of groups) {
+  // Artists keep their collapsible track lists; albums are always two-column tiles.
+  appendBatched(box,groups,items=>{
     const t=items[0];
     const details=document.createElement('details');details.className='library-group';
-    const name=mode==='albums'?(t.album||'Без альбома'):t.artist;
-    const subtitle=mode==='albums'?t.artist:items.length+' треков';
     const header=document.createElement('summary');
-    header.innerHTML='<span class="lib-cover">'+art(t)+'</span><span class="group-label"><strong>'+esc(name)+
-      '</strong><small>'+esc(subtitle)+' · '+items.length+' тр.</small></span><span class="group-arrow">⌄</span>';
-    const content=document.createElement('div');content.className='group-tracks';
-    details.append(header,content);
+    header.innerHTML='<span class="lib-cover">'+art(t)+'</span><span class="group-label"><strong>'+esc(t.artist)+
+      '</strong><small>'+items.length+' треков</small></span><span class="group-arrow">⌄</span>';
+    const list=document.createElement('div');list.className='group-tracks';
+    details.append(header,list);
     details.addEventListener('toggle',()=>{
-      if (details.open && !content.childElementCount) {
-        const fragment=document.createDocumentFragment();
-        items.sort((a,b)=>(a.trackNumber||0)-(b.trackNumber||0));
-        items.forEach(song=>fragment.appendChild(libraryRow(song)));
-        content.append(fragment);
+      if(details.open && !list.childElementCount){
+        sortAlbumItems(items).forEach(t=>list.append(libraryRow(t)));
       }
     });
-    box.appendChild(details);
-  }
+    return details;
+  },70);
 }
-function renderSearch() {
-  $('#panelHeading').textContent='Поиск';
-  $('#libraryTabs').hidden=true;
-  const box=$('#nativeLibraryList');
-  box.innerHTML='<input class="search-input" id="nativeSearch" placeholder="Исполнитель, альбом или трек" autocomplete="off"><div id="searchResults"></div>';
-  const input=$('#nativeSearch'); input.value=searchTerm;
-  const results=$('#searchResults');
-  const draw=()=>{
-    searchTerm=input.value;
-    const term=searchTerm.toLocaleLowerCase('ru').trim();
-    const matches=tracks.filter(t=>((t.title||'')+' '+(t.artist||'')+' '+(t.album||''))
-      .toLocaleLowerCase('ru').includes(term));
-    const fragment=document.createDocumentFragment();
-    matches.slice(0,120).forEach(t=>fragment.appendChild(libraryRow(t)));
-    results.replaceChildren(fragment);
-    if (matches.length>120) {
-      const note=document.createElement('p');note.className='muted';
-      note.textContent='Показаны первые 120 результатов. Уточни запрос.';results.append(note);
-    }
-  };
-  input.oninput=draw;
-  draw();
+function openTrackMenu(id){
+  const t=track(id);if(!t)return;
+  trackMenuId=String(id);
+  $('#menuTrackHeading').textContent=t.artist+' — '+t.title;
+  $('#menuFavorite').textContent=favorites.has(trackMenuId)?'Убрать из избранного':'Добавить в избранное';
+  $('#trackMenu').classList.add('open');
+  $('#trackMenu').setAttribute('aria-hidden','false');
 }
-function closeLibrary() {
-  $('#libraryPanel').classList.remove('open');
+function closeTrackMenu(){
+  trackMenuId=null;$('#trackMenu').classList.remove('open');$('#trackMenu').setAttribute('aria-hidden','true');
+}
+$('#menuClose').onclick=closeTrackMenu;
+$('#trackMenu').addEventListener('click',e=>{if(e.target===$('#trackMenu'))closeTrackMenu();});
+$('#menuPlayNext').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id)putNext(id);};
+$('#menuPlayNow').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id){choose(id,1);closeLibrary();}};
+$('#menuFavorite').onclick=()=>{
+  const id=trackMenuId;closeTrackMenu();if(!id)return;
+  if(favorites.has(id))favorites.delete(id);else favorites.add(id);
+  localStorage.setItem('tg-favorites',JSON.stringify([...favorites]));
+  $('#favorite').classList.toggle('liked',favorites.has(String(current)));
+  toast(favorites.has(id)?'Добавлено в избранное':'Удалено из избранного');
+};
+function closeLibrary(){
+  closeTrackMenu();closeAlbum();$('#libraryPanel').classList.remove('open');
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='Главная'));
 }
 document.querySelectorAll('.nav-item').forEach(button=>button.addEventListener('click',()=>{
   const tab=button.dataset.tab;
-  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b===button));
-  if (tab==='Библиотека') { renderNativeLibrary();$('#libraryPanel').classList.add('open'); }
-  else if (tab==='Поиск') { renderSearch();$('#libraryPanel').classList.add('open'); }
-  else if (tab==='Главная') closeLibrary();
+  if(tab==='Библиотека'){
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b===button));
+    $('#libraryPanel').classList.add('open');
+    renderNativeLibrary();
+  }else if(tab==='Главная')closeLibrary();
   else toast('Профиль появится в следующей версии');
 }));
 document.querySelectorAll('.lib-tab').forEach(button=>button.onclick=()=>renderNativeLibrary(button.dataset.mode));
 $('#closeLibrary').onclick=closeLibrary;
-
+$('#albumBack').onclick=closeAlbum;
+$('#librarySearch').addEventListener('input',e=>{
+  searchTerm=e.target.value;
+  $('#clearSearch').hidden=!searchTerm;
+  renderSearchMatches();
+});
+$('#clearSearch').onclick=()=>{
+  $('#librarySearch').value='';searchTerm='';$('#clearSearch').hidden=true;
+  renderNativeLibrary(libraryMode);$('#librarySearch').focus();
+};
 function nativeLibraryLoaded(items) {
   if (!Array.isArray(items) || !items.length) {
     toast('Не найдены аудиофайлы — проверь разрешение');
@@ -549,12 +742,13 @@ function nativeLibraryLoaded(items) {
     current=String(lastNativeState.id);nativeQueueReady=true;
   }
   currentPosition=0;history=[];pendingNativeId=null;
+  if(stackTimer)clearTimeout(stackTimer);
   stackAnimating=false;
-  updateStack(0);
+  stackMarkup();
   renderQueue();
   updatePlay();
   if ($('#libraryPanel').classList.contains('open')) {
-    if ($('#panelHeading').textContent==='Поиск') renderSearch();
+    if(activeAlbumKey){const items=groupLibrary('albums').find(g=>albumKey(g[0])===activeAlbumKey);if(items)openAlbum(items);else renderNativeLibrary();}
     else renderNativeLibrary();
   }
   if (lastNativeState) nativePlaybackState(lastNativeState);
@@ -596,7 +790,7 @@ $('#files').onchange=async event=>{
     probe.onerror=()=>{probe.removeAttribute('src');};
   }
   renderQueue();
-  if ($('#panelHeading').textContent==='Библиотека')renderNativeLibrary();
+  if ($('#libraryPanel').classList.contains('open'))renderNativeLibrary();
   toast('Добавлено файлов: '+files.length);
   event.target.value='';
 };
@@ -608,37 +802,43 @@ audio.ontimeupdate=()=>{
 };
 audio.onended=next;
 
-// Native state events are ~650ms. Draw only 12 frames/s with a small canvas.
+// 0.3: interpolate the Media3 position between 650ms callbacks.
+// The translucent blurred lens is cheap: the canvas is low-resolution, under 30fps.
 const wave=$('#wave');
 function frame(now) {
   requestAnimationFrame(frame);
-  if (document.hidden || now-lastWaveTime<83) return;
+  if(document.hidden)return;
+  const speed=scrub ? 25 : (playing ? 32 : 85);
+  if(now-lastWaveTime < speed)return;
   lastWaveTime=now;
+  updateTimes(now);
   const rect=wave.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
-  const ratio=Math.min(window.devicePixelRatio||1,1.15);
-  const w=Math.min(700,Math.round(rect.width*ratio));
-  const h=Math.min(95,Math.round(rect.height*ratio));
-  if (wave.width!==w || wave.height!==h) {wave.width=w;wave.height=h;}
+  if(!rect.width||!rect.height)return;
+  const ratio=Math.min(window.devicePixelRatio||1,1.1);
+  const w=Math.min(560,Math.round(rect.width*ratio));
+  const h=Math.min(90,Math.round(rect.height*ratio));
+  if(wave.width!==w||wave.height!==h){wave.width=w;wave.height=h;}
   const c=wave.getContext('2d',{alpha:false});
-  const t=track();if (!c || !t) return;
-  c.fillStyle='#554c40';c.fillRect(0,0,w,h);
-  const duration=playerState?.id===String(current)&&playerState.duration>0?playerState.duration:t.duration;
-  const progress=scrub?scrub.progress:Math.min(1,Math.max(0,currentPosition/Math.max(1,duration)));
+  if(!c || !track())return;
+  const dur=activeDuration();
+  const progress=dur>0 ? Math.min(1,visiblePosition(now)/dur) : 0;
+  c.fillStyle='#574e42';c.fillRect(0,0,w,h);
   const filled=w*progress;
-  const color=c.createLinearGradient(0,0,w,0);
-  color.addColorStop(0,'#eee2cd');color.addColorStop(1,'#cfc2ae');
-  c.fillStyle=color;
+  const fill=c.createLinearGradient(0,0,w,0);
+  fill.addColorStop(0,'#f5e9d5');fill.addColorStop(.65,'#e3d2bb');fill.addColorStop(1,'#b8a88e');
+  c.fillStyle=fill;
   c.beginPath();c.moveTo(0,0);
-  // Gentle edge ripple, no expensive per-frame blur/filter or offscreen canvas.
-  const amplitude=h*.045;
-  for(let y=0;y<=h;y+=Math.max(2,Math.round(h/22))){
-    const edge=filled+Math.sin(y*.13+now*.0017)*amplitude;
-    c.lineTo(edge,y);
+  const amplitude=Math.max(1,h*.045);
+  for(let y=0;y<=h;y+=Math.max(2,Math.round(h/18))){
+    c.lineTo(filled+Math.sin(y*.11+now*.0014)*amplitude,y);
   }
   c.lineTo(filled,h);c.lineTo(0,h);c.closePath();c.fill();
-  c.fillStyle='rgba(255,255,255,.16)';
-  c.fillRect(0,0,w,Math.max(1,h*.06));
+  // A soft bright boundary, not a static purple blur over the background.
+  if(filled>1){
+    const edge=c.createLinearGradient(filled-6,0,filled+9,0);
+    edge.addColorStop(0,'#e7d7ba00');edge.addColorStop(.5,'#fff7e199');edge.addColorStop(1,'#fff8ee00');
+    c.fillStyle=edge;c.fillRect(filled-6,0,15,h);
+  }
 }
 
 stackMarkup();
