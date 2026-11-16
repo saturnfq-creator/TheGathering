@@ -1,6 +1,6 @@
 'use strict';
-// The Gathering 0.3: stable cover cards, interpolated timeline, unified library and native Media3 queue.
-// Rendering is intentionally capped and never keeps obsolete cover layers alive.
+// The Gathering 0.4: reversible gestures, magnetic queue sorting and native Media3 playback.
+// Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
 const native = window.AndroidBridge || null;
 const audio = $('#audio');
@@ -40,9 +40,7 @@ let trackMenuId = null;
 let lastDisplayedSecond = -1;
 let importedCounter = 0;
 let queueDisplayLimit = 65;
-let favorites;
-try { favorites = new Set(JSON.parse(localStorage.getItem('tg-favorites') || '[]').map(String)); }
-catch (_) { favorites = new Set(); }
+let titleMeasureFrame = 0;
 
 function track(id = current) { return lookup.get(String(id)); }
 function index() { return order.indexOf(String(current)); }
@@ -104,11 +102,30 @@ function updateTimes(now = performance.now()) {
 }
 function updatePlayerChrome() {
   const t = track();if (!t) return;
-  $('#title').textContent = t.artist + ' - ' + t.title;
-  $('#favorite').classList.toggle('liked',favorites.has(String(current)));
+  const label = $('#titleInner');
+  label.textContent = t.artist + ' - ' + t.title;
+  $('#title').classList.remove('marquee');
+  label.style.removeProperty('--title-overflow');
+  if (titleMeasureFrame) cancelAnimationFrame(titleMeasureFrame);
+  titleMeasureFrame = requestAnimationFrame(updateTitleOverflow);
   lastDisplayedSecond=-1;
   updateTimes();
 }
+function updateTitleOverflow() {
+  titleMeasureFrame = 0;
+  const container=$('#title'), label=$('#titleInner');
+  if(!container || !label)return;
+  const excess=Math.max(0,label.scrollWidth-container.clientWidth);
+  container.classList.toggle('marquee',excess>2);
+  if(excess>2){
+    label.style.setProperty('--title-overflow',excess+'px');
+    label.style.animationDuration=Math.max(7,Math.min(16,6+excess/25))+'s';
+  }
+}
+window.addEventListener('resize',()=>{
+  if(titleMeasureFrame)cancelAnimationFrame(titleMeasureFrame);
+  titleMeasureFrame=requestAnimationFrame(updateTitleOverflow);
+});
 function makeStackCard(id,role) {
   const card=document.createElement('div');
   card.className='album '+role;
@@ -136,6 +153,7 @@ function stackMarkup() {
 function setCardRole(card,role,recycle=false) {
   card.className='album '+role+(recycle?' recycle':'');
   card.style.transform='';
+  card.style.opacity='';
 }
 function recycleCard(card,id,role) {
   const t=track(id);
@@ -156,6 +174,7 @@ function updateStack(direction=0) {
   const match=direction>0 ? old.back1.dataset.id===String(current) : old.prev.dataset.id===String(current);
   if(!match){stackMarkup();return;}
   stackAnimating=true;
+  if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
   const pos=index(),n=order.length;
   const at=offset=>order[(pos+offset+n)%n];
   if(direction>0){
@@ -190,7 +209,7 @@ function updateStack(direction=0) {
       queuedNavigation=0;
       setTimeout(()=>dir>0?next():prev(),0);
     }
-  },500);
+  },540);
 }
 function nativePlaylist() {
   return order.map(id => track(id)).filter(t => t && t.uri).map(t => ({
@@ -203,7 +222,7 @@ function choose(id, direction = 1, fromNative = false) {
   const old = String(current);
   const changed = id !== old;
   if (changed) {
-    if (!fromNative) history.push(old);
+    if (!fromNative && direction > 0) history.push(old);
     current = id;
     currentPosition = 0;
     pendingSeek=null;
@@ -255,6 +274,7 @@ function prev() {
   if(stackAnimating){queuedNavigation=-1;return;}
   if (order.length < 2) return;
   const candidate = history.length ? history.pop() : order[(index()-1+order.length)%order.length];
+  // A reverse selection must not push the song being left onto history.
   choose(candidate,-1);
 }
 function upcomingIds() {
@@ -359,53 +379,158 @@ function playEntireAlbum(ids) {
   updatePlay();
   closeLibrary();
 }
-function reorderUpcoming(draggedId, hoveredId) {
-  const future = upcomingIds();
-  const from = future.indexOf(String(draggedId));
-  const to = future.indexOf(String(hoveredId));
-  if (from < 0 || to < 0 || from === to) return;
-  future.splice(to,0,future.splice(from,1)[0]);
-  order = [current,...future]; // current remains pinned to the top of the queue
+function commitUpcomingOrder(future) {
+  const expected=upcomingIds();
+  if(future.length!==expected.length || new Set(future).size!==expected.length ||
+    future.some(id=>!expected.includes(id)))return false;
+  if(future.every((id,i)=>id===expected[i]))return false;
+  order=[String(current),...future];
   refreshStackForQueue();
   syncQueueToNative();
   renderQueue();
-  toast('Порядок воспроизведения обновлён');
+  // Intentionally no toast: the animated queue itself confirms the change.
+  return true;
 }
-let dragQueue = null;
-const queueList = $('#queueList');
-queueList.addEventListener('pointerdown', e => {
-  const handle = e.target.closest('.handle');
-  if (!handle) return;
-  const row = handle.closest('.queue-item');
-  if (!row) return;
-  dragQueue = {id:row.dataset.id,hover:null,handle,row,pointer:e.pointerId};
-  row.classList.add('dragging');
+function reorderUpcoming(draggedId, hoveredId) {
+  const future=upcomingIds();
+  const from=future.indexOf(String(draggedId));
+  const to=future.indexOf(String(hoveredId));
+  if(from<0||to<0||from===to)return false;
+  future.splice(to,0,future.splice(from,1)[0]);
+  return commitUpcomingOrder(future);
+}
+let dragQueue=null;
+const queueList=$('#queueList');
+const queueRowSelector='.queue-item';
+function queueRows(){return Array.from(queueList.querySelectorAll(queueRowSelector));}
+function expandQueueForDrag(){
+  const more=queueList.querySelector('.queue-more');
+  if(more){
+    // Add rows rather than rebuilding: pointer capture and the placeholder survive.
+    const upcoming=upcomingIds();
+    const from=queueRows().length;
+    const until=Math.min(upcoming.length,from+65);
+    const fragment=document.createDocumentFragment();
+    for(let i=from;i<until;i++){
+      const t=track(upcoming[i]); if(t)fragment.appendChild(queueItem(t));
+    }
+    queueList.insertBefore(fragment,more);
+    queueDisplayLimit=Math.max(queueDisplayLimit,until);
+    if(until>=upcoming.length)more.remove();
+    else more.textContent='Показать ещё ('+(upcoming.length-until)+')';
+  }
+}
+function animateQueueShift(before){
+  // FLIP technique: the other rows slide into the gap under the held track.
+  for(const row of queueRows()){
+    if(row===dragQueue?.row)continue;
+    const first=before.get(row);
+    if(!first)continue;
+    const delta=first.top-row.getBoundingClientRect().top;
+    if(Math.abs(delta)<.5)continue;
+    if(typeof row.animate==='function'){
+      row.animate([{transform:`translateY(${delta}px)`},{transform:'translateY(0)'}],{
+        duration:170,easing:'cubic-bezier(.2,.75,.2,1)'
+      });
+    }
+  }
+}
+function repositionQueueGap(){
+  const drag=dragQueue;
+  if(!drag)return;
+  const y=drag.y;
+  const all=queueRows();
+  const rows=all.filter(row=>row!==drag.row);
+  const firstOffset=all.length ? all[0].offsetTop : 0;
+  const listTop=queueList.getBoundingClientRect().top-queueList.scrollTop;
+  let target=null;
+  for(const row of rows){
+    // offsetTop represents layout, not the temporary FLIP translation.
+    const center=listTop+(row.offsetTop-firstOffset)+row.offsetHeight/2;
+    if(y<center){target=row;break;}
+  }
+  if(target===drag.row.nextElementSibling || (!target && drag.row===all[all.length-1]))return;
+  for(const row of all)row.getAnimations?.().forEach(a=>a.cancel());
+  const before=new Map(all.map(row=>[row,row.getBoundingClientRect()]));
+  if(target)queueList.insertBefore(drag.row,target);
+  else {
+    const more=queueList.querySelector('.queue-more');
+    queueList.insertBefore(drag.row,more||null);
+  }
+  animateQueueShift(before);
+}
+function queueScrollTick(){
+  const drag=dragQueue;
+  if(!drag)return;
+  const rect=queueList.getBoundingClientRect();
+  const edge=Math.min(92,rect.height*.23);
+  let amount=0;
+  if(drag.y<rect.top+edge) amount=-Math.min(22,2+(rect.top+edge-drag.y)/edge*19);
+  else if(drag.y>rect.bottom-edge)amount=Math.min(22,2+(drag.y-(rect.bottom-edge))/edge*19);
+  if(amount){
+    const old=queueList.scrollTop;
+    queueList.scrollTop+=amount;
+    if(amount>0 && queueList.scrollHeight-queueList.clientHeight-queueList.scrollTop<170)
+      expandQueueForDrag();
+    if(old!==queueList.scrollTop)repositionQueueGap();
+  }
+  drag.frame=requestAnimationFrame(queueScrollTick);
+}
+function paintQueueGhost(){
+  const drag=dragQueue;
+  if(!drag)return;
+  drag.ghost.style.transform=`translate3d(0,${drag.y-drag.startY}px,0) scale(1.018)`;
+}
+function startQueueDrag(e,handle,row){
+  const rect=row.getBoundingClientRect();
+  const ghost=row.cloneNode(true);
+  ghost.classList.add('queue-drag-ghost');
+  ghost.classList.remove('drop-gap');
+  Object.assign(ghost.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+  $('#overlay').appendChild(ghost);
+  dragQueue={id:row.dataset.id,pointer:e.pointerId,row,handle,ghost,
+    y:e.clientY,startY:e.clientY,frame:0,startScrollTop:queueList.scrollTop};
+  row.classList.add('drop-gap');
   handle.setPointerCapture(e.pointerId);
+  dragQueue.frame=requestAnimationFrame(queueScrollTick);
+}
+queueList.addEventListener('pointerdown',e=>{
+  const handle=e.target.closest('.handle');
+  if(!handle||dragQueue)return;
+  const row=handle.closest('.queue-item');
+  if(!row)return;
+  startQueueDrag(e,handle,row);
   e.preventDefault();
 });
-queueList.addEventListener('pointermove', e => {
-  if (!dragQueue || e.pointerId !== dragQueue.pointer) return;
-  let nearest = null, minDistance = Infinity;
-  for (const row of queueList.querySelectorAll('.queue-item')) {
-    if (row === dragQueue.row) continue;
-    const rect = row.getBoundingClientRect();
-    const dist = Math.abs(e.clientY - (rect.top+rect.height/2));
-    if (dist < minDistance) { nearest = row; minDistance = dist; }
-    row.classList.remove('drop-target');
-  }
-  if (nearest) { nearest.classList.add('drop-target'); dragQueue.hover = nearest.dataset.id; }
+queueList.addEventListener('pointermove',e=>{
+  if(!dragQueue||dragQueue.pointer!==e.pointerId)return;
+  dragQueue.y=e.clientY;
+  paintQueueGhost();
+  repositionQueueGap();
+  e.preventDefault();
 });
-function finishQueueDrag(cancelled) {
-  if (!dragQueue) return;
-  const target = !cancelled && dragQueue.hover;
-  const id = dragQueue.id;
-  dragQueue = null;
-  if (target) reorderUpcoming(id,target);
-  else renderQueue();
+function finishQueueDrag(cancelled){
+  const drag=dragQueue;
+  if(!drag)return;
+  cancelAnimationFrame(drag.frame);
+  drag.ghost.remove();
+  drag.row.classList.remove('drop-gap');
+  dragQueue=null;
+  if(!cancelled){
+    const visibleIds=queueRows().map(row=>row.dataset.id);
+    const expected=upcomingIds();
+    const visibleSet=new Set(visibleIds);
+    // Keep unrendered tracks, maintaining the positions of the loaded queue.
+    const remaining=expected.filter(id=>!visibleSet.has(id));
+    commitUpcomingOrder([...visibleIds,...remaining]);
+  }else renderQueue();
 }
-queueList.addEventListener('pointerup', e => { if (dragQueue?.pointer===e.pointerId) finishQueueDrag(false); });
-queueList.addEventListener('pointercancel', e => { if (dragQueue?.pointer===e.pointerId) finishQueueDrag(true); });
-
+queueList.addEventListener('pointerup',e=>{
+  if(dragQueue?.pointer===e.pointerId)finishQueueDrag(false);
+});
+queueList.addEventListener('pointercancel',e=>{
+  if(dragQueue?.pointer===e.pointerId)finishQueueDrag(true);
+});
 // A drag never changes state until pointerup; Android receives the same seek time.
 function relativeScrub(e) {
   const rect = $('#timeline').getBoundingClientRect();
@@ -464,12 +589,6 @@ $('#shuffle').onclick = () => {
   $('#shuffle').classList.toggle('shuffle-on',shuffle);
   toast(shuffle ? 'Перемешивание при ручном переключении' : 'Обычный порядок');
 };
-$('#favorite').onclick = () => {
-  if (favorites.has(current)) favorites.delete(current); else favorites.add(current);
-  localStorage.setItem('tg-favorites',JSON.stringify([...favorites]));
-  $('#favorite').classList.toggle('liked',favorites.has(current));
-  toast(favorites.has(current) ? 'Добавлено в «Избранное»' : 'Удалено из «Избранного»');
-};
 $('#device').onclick = () => toast('Воспроизведение на этом устройстве');
 $('#queueOpen').onclick = () => { queueDisplayLimit=65;$('#overlay').classList.add('open');renderQueue(); };
 $('#close').onclick = () => $('#overlay').classList.remove('open');
@@ -478,35 +597,79 @@ $('#overlay').addEventListener('click', e => {
 });
 
 const stack = $('#stack');
-let swipe = null;
-stack.addEventListener('pointerdown', e => {
-  if (e.isPrimary === false) return;
-  swipe = {pointer:e.pointerId,x:e.clientX,y:e.clientY};
+let swipe=null;
+let swipeFrame=0;
+function paintCoverGesture(){
+  swipeFrame=0;
+  const g=swipe;
+  if(!g || stackAnimating || !stackCards)return;
+  const width=Math.max(1,stack.getBoundingClientRect().width);
+  const dx=Math.max(-width*1.15,Math.min(width*1.15,g.dx));
+  const progress=Math.min(1,Math.abs(dx)/width);
+  const front=stackCards.front,back1=stackCards.back1,back2=stackCards.back2,prevCard=stackCards.prev;
+  g.painted=true;
+  const panels=[front,back1,back2,prevCard];
+  for(const panel of panels)panel.classList.add('gesture');
+  if(dx<0){
+    // Next: finger pulls current artwork left; the next artwork emerges beneath it.
+    front.style.transform=`translate3d(${dx}px,0,0) rotate(${-progress*8}deg) scale(${1-.06*progress})`;
+    front.style.opacity=String(1-.36*progress);
+    back1.style.transform=`translate3d(0,${-8*(1-progress)}%,0) scale(${.95+.05*progress})`;
+    back1.style.opacity=String(.91+.09*progress);
+    back2.style.transform=`translate3d(0,${-15+7*progress}%,0) scale(${.89+.06*progress})`;
+    prevCard.style.transform='';prevCard.style.opacity='';
+  }else{
+    // Previous: the same card returns from the right, following the finger.
+    const incoming=prevCard;
+    incoming.style.transform=`translate3d(${(1-progress)*105}%,0,0) rotate(${(1-progress)*8}deg) scale(${.94+.06*progress})`;
+    incoming.style.opacity=String(progress);
+    front.style.transform=`translate3d(0,${-8*progress}%,0) scale(${1-.05*progress})`;
+    front.style.opacity=String(1-.09*progress);
+    back1.style.transform=`translate3d(0,${-8-7*progress}%,0) scale(${.95-.06*progress})`;
+    back1.style.opacity=String(.91-.22*progress);
+    back2.style.transform='';back2.style.opacity='';
+  }
+}
+function resetCoverGesture(){
+  if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
+  if(!stackCards)return;
+  const panels=Object.values(stackCards);
+  // Commit the dragged transforms before handing motion back to CSS transitions.
+  stack.getBoundingClientRect();
+  panels.forEach(card=>{
+    card.classList.remove('gesture');
+    card.style.transform='';
+    card.style.opacity='';
+  });
+}
+stack.addEventListener('pointerdown',e=>{
+  if(e.isPrimary===false || stackAnimating || !stackCards)return;
+  swipe={pointer:e.pointerId,x:e.clientX,y:e.clientY,dx:0,dy:0,painted:false};
   stack.setPointerCapture(e.pointerId);
 });
-stack.addEventListener('pointermove', e => {
-  if (!swipe || e.pointerId !== swipe.pointer || stackAnimating) return;
-  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
-  const front = stack.querySelector('.front');
-  if (front && Math.abs(dx)>Math.abs(dy)*1.4) {
-    front.classList.add('dragging');
-    front.style.transform='translate3d('+Math.max(-145,Math.min(145,dx*.72))+'px,0,0) rotate('+(dx*.02)+'deg)';
-  }
+stack.addEventListener('pointermove',e=>{
+  const g=swipe;
+  if(!g||e.pointerId!==g.pointer||stackAnimating)return;
+  g.dx=e.clientX-g.x;
+  g.dy=e.clientY-g.y;
+  if(Math.abs(g.dx)<=6 || Math.abs(g.dx)<Math.abs(g.dy)*1.2)return;
+  if(!swipeFrame)swipeFrame=requestAnimationFrame(paintCoverGesture);
 });
-stack.addEventListener('pointerup', e => {
-  if (!swipe || e.pointerId !== swipe.pointer) return;
-  const dx = e.clientX-swipe.x, dy = e.clientY-swipe.y;
-  swipe = null;
-  const front = stack.querySelector('.front');
-  if(front){front.classList.remove('dragging');front.getBoundingClientRect();}
-  if (Math.abs(dx)>48 && Math.abs(dx)>Math.abs(dy)*1.1) {
-    if (dx<0) next(); else prev();
-  }else if(front){ front.style.transform=''; }
+stack.addEventListener('pointerup',e=>{
+  const g=swipe;
+  if(!g||g.pointer!==e.pointerId)return;
+  g.dx=e.clientX-g.x;g.dy=e.clientY-g.y;
+  if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
+  if(Math.abs(g.dx)>6&&Math.abs(g.dx)>Math.abs(g.dy)*1.2)paintCoverGesture();
+  swipe=null;
+  const accepted=Math.abs(g.dx)>Math.max(45,stack.clientWidth*.16) &&
+    Math.abs(g.dx)>Math.abs(g.dy)*1.1;
+  if(accepted){
+    // updateStack now animates FROM the position under the finger.
+    if(g.dx<0)next();else prev();
+  }else resetCoverGesture();
 });
-stack.addEventListener('pointercancel', () => {
-  swipe = null;
-  const front = stack.querySelector('.front'); if(front){front.classList.remove('dragging');front.style.transform='';}
-});
+stack.addEventListener('pointercancel',()=>{swipe=null;resetCoverGesture();});
 document.addEventListener('keydown', e => {
   if ($('#overlay').classList.contains('open')) return;
   if (e.key==='ArrowLeft') next();
@@ -682,7 +845,6 @@ function openTrackMenu(id){
   const t=track(id);if(!t)return;
   trackMenuId=String(id);
   $('#menuTrackHeading').textContent=t.artist+' — '+t.title;
-  $('#menuFavorite').textContent=favorites.has(trackMenuId)?'Убрать из избранного':'Добавить в избранное';
   $('#trackMenu').classList.add('open');
   $('#trackMenu').setAttribute('aria-hidden','false');
 }
@@ -693,16 +855,9 @@ $('#menuClose').onclick=closeTrackMenu;
 $('#trackMenu').addEventListener('click',e=>{if(e.target===$('#trackMenu'))closeTrackMenu();});
 $('#menuPlayNext').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id)putNext(id);};
 $('#menuPlayNow').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id){choose(id,1);closeLibrary();}};
-$('#menuFavorite').onclick=()=>{
-  const id=trackMenuId;closeTrackMenu();if(!id)return;
-  if(favorites.has(id))favorites.delete(id);else favorites.add(id);
-  localStorage.setItem('tg-favorites',JSON.stringify([...favorites]));
-  $('#favorite').classList.toggle('liked',favorites.has(String(current)));
-  toast(favorites.has(id)?'Добавлено в избранное':'Удалено из избранного');
-};
 function closeLibrary(){
   closeTrackMenu();closeAlbum();$('#libraryPanel').classList.remove('open');
-  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='Главная'));
+  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='Плеер'));
 }
 document.querySelectorAll('.nav-item').forEach(button=>button.addEventListener('click',()=>{
   const tab=button.dataset.tab;
@@ -710,7 +865,7 @@ document.querySelectorAll('.nav-item').forEach(button=>button.addEventListener('
     document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b===button));
     $('#libraryPanel').classList.add('open');
     renderNativeLibrary();
-  }else if(tab==='Главная')closeLibrary();
+  }else if(tab==='Плеер')closeLibrary();
   else toast('Профиль появится в следующей версии');
 }));
 document.querySelectorAll('.lib-tab').forEach(button=>button.onclick=()=>renderNativeLibrary(button.dataset.mode));
@@ -822,22 +977,22 @@ function frame(now) {
   if(!c || !track())return;
   const dur=activeDuration();
   const progress=dur>0 ? Math.min(1,visiblePosition(now)/dur) : 0;
-  c.fillStyle='#574e42';c.fillRect(0,0,w,h);
+  c.fillStyle='#4c463e';c.fillRect(0,0,w,h);
   const filled=w*progress;
   const fill=c.createLinearGradient(0,0,w,0);
-  fill.addColorStop(0,'#f5e9d5');fill.addColorStop(.65,'#e3d2bb');fill.addColorStop(1,'#b8a88e');
+  fill.addColorStop(0,'#fff0d5');fill.addColorStop(.65,'#f4dbb7');fill.addColorStop(1,'#d7b890');
   c.fillStyle=fill;
   c.beginPath();c.moveTo(0,0);
-  const amplitude=Math.max(1,h*.045);
+  const amplitude=Math.max(2,h*.14);
   for(let y=0;y<=h;y+=Math.max(2,Math.round(h/18))){
-    c.lineTo(filled+Math.sin(y*.11+now*.0014)*amplitude,y);
+    c.lineTo(filled+Math.sin(y*.115+now*.00125)*amplitude,y);
   }
   c.lineTo(filled,h);c.lineTo(0,h);c.closePath();c.fill();
-  // A soft bright boundary, not a static purple blur over the background.
+  // Bright moving wave boundary and a lightweight soft edge, no static colored blotch.
   if(filled>1){
-    const edge=c.createLinearGradient(filled-6,0,filled+9,0);
-    edge.addColorStop(0,'#e7d7ba00');edge.addColorStop(.5,'#fff7e199');edge.addColorStop(1,'#fff8ee00');
-    c.fillStyle=edge;c.fillRect(filled-6,0,15,h);
+    const edge=c.createLinearGradient(filled-11,0,filled+11,0);
+    edge.addColorStop(0,'#e7d7ba00');edge.addColorStop(.5,'#fff9eecb');edge.addColorStop(1,'#fff8ee00');
+    c.fillStyle=edge;c.fillRect(filled-11,0,22,h);
   }
 }
 

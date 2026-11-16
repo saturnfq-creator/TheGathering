@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const code = fs.readFileSync(__dirname+'/../app/src/main/assets/app.js','utf8');
 const fake = () => ({
-  style:{setProperty(){}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
+  style:{setProperty(){},removeProperty(){}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
   textContent:'',innerHTML:'',value:'',attributes:{},
   setAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
   replaceChildren(...els){this.children=els},appendChild(el){this.children.push(el)},append(){},remove(){},
@@ -26,9 +26,9 @@ const native = {
 let testClock=10000;
 const sandbox = {
   document:{querySelector:get,querySelectorAll:()=>[],createElement:()=>fake(),createDocumentFragment:()=>fake(),hidden:false,activeElement:fake(),addEventListener(){}},
-  window:{AndroidBridge:native,devicePixelRatio:1},
+  window:{AndroidBridge:native,devicePixelRatio:1,addEventListener(){}},
   localStorage:{getItem:()=>null,setItem(){}},
-  requestAnimationFrame(){},clearTimeout(){},setTimeout(){return 1},
+  requestAnimationFrame(){return 1},cancelAnimationFrame(){},clearTimeout(){},setTimeout(){return 1},
   console,Intl,Map,Set,Math,Number,String,JSON,Date,URL,performance:{now:()=>testClock},
 };
 sandbox.window.document=sandbox.document;
@@ -77,4 +77,10 @@ expr('pendingNativeId=null;nativePlaybackState({id:"a",position:4,playWhenReady:
 testClock+=420;
 assert(Math.abs(expr('visiblePosition()')-4.42)<.01);
 assert.equal(expr('groupLibrary("albums").length'),2);
-console.log('PASS: queue reorder, play next, album queue/play, state guard, smooth playback clock');
+// No favorites or blue focus ring: generated app must not retain obsolete UX.
+const html=fs.readFileSync(__dirname+'/../app/src/main/assets/index.html','utf8');
+assert(!html.includes('menuFavorite')&&!html.includes('id="favorite"'));
+assert(!html.includes('ПЕРЕТАСКИВАЙ ЗА')&&!html.includes('Главная'));
+assert(html.includes('data-tab="Плеер"'));
+assert(html.includes('queue-drag-ghost'));
+console.log('PASS v0.4: queue reorder, play next, album queue/play, state guard, smooth playback clock, simplified favorites-free chrome');

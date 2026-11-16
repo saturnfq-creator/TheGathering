@@ -124,15 +124,58 @@
 .track-menu-dismiss{text-align:center;border-radius:16px;background:#ffffff14;margin-top:12px;}
 @media(orientation:landscape) and (max-height:560px){.bottom-nav{height:51px;min-height:51px}.library-panel{bottom:62px;padding-top:3%}.album-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
 @media(prefers-reduced-motion:reduce){.album{transition-duration:50ms!important}.screen{transition:none}}
+
+/* v0.4 – restrained glass, gesture continuity and compositor-safe micro-interactions */
+html,body,.screen{ -webkit-tap-highlight-color:transparent; }
+button,input,textarea,summary,[role="button"]{ -webkit-tap-highlight-color:transparent; }
+button:focus,button:active,input:focus{ outline:none; }
+button:focus-visible,.handle:focus-visible{ outline:1px solid #f2d5a7a6; outline-offset:2px; }
+button,svg{-webkit-user-select:none;user-select:none;}
+.stack{isolation:isolate;}
+.stack::before{content:"";position:absolute;z-index:0;inset:-8% -9% -5%;pointer-events:none;
+  border-radius:35%;background:radial-gradient(ellipse at 50% 53%,#e0bfa769 0%,#d6ac8450 39%,transparent 74%);
+  filter:blur(19px);opacity:.55;}
+.album{transition:transform 520ms cubic-bezier(.18,.78,.2,1),opacity 520ms cubic-bezier(.18,.78,.2,1);
+  -webkit-transform:translateZ(0);transform:translateZ(0);}
+.album.gesture{transition:none!important;will-change:transform,opacity;}
+.album.back1,.album.back2{will-change:auto;}
+.album.prev-card{z-index:4;transform:translate3d(105%,0,0) rotate(8deg) scale(.94);opacity:0;}
+.album.leaving-left{transform:translate3d(-114%,0,0) rotate(-8deg) scale(.94);opacity:0;}
+.album.recycle{transition:none!important;opacity:0!important;}
+.track-title{white-space:nowrap;text-overflow:clip;}
+.track-title #titleInner{display:inline-block;min-width:100%;white-space:nowrap;will-change:auto;}
+.track-title.marquee #titleInner{min-width:0;animation:titleMarquee 10s linear infinite;will-change:transform;}
+@keyframes titleMarquee{0%,14%{transform:translateX(0)}45%,66%{transform:translateX(calc(-1 * var(--title-overflow,0px)))}95%,100%{transform:translateX(0)}}
+.actions{justify-content:flex-start;}
+.timeline{overflow:hidden;border-color:#f3d5a78a;box-shadow:inset 0 2px 3px #fff7,
+  0 0 10px #eac99f63,0 0 29px #b79b7752,0 6px 17px #0006;}
+.timeline canvas{filter:blur(1.15px) saturate(1.19);transform:none;border-radius:inherit;}
+.timeline::after{background:linear-gradient(175deg,#ffffff31 0%,#ffffff08 35%,transparent 60%,#130f102e 100%);}
+.bottom-nav{background:linear-gradient(150deg,#a99f9260,#655e5780 42%,#2828249e);border:1px solid #ffffff61;
+  -webkit-backdrop-filter:blur(13px) saturate(1.25);backdrop-filter:blur(13px) saturate(1.25);
+  box-shadow:inset 0 1px 1px #ffffff48,0 8px 26px #0005,0 0 21px #e0c6ac20;}
+.bottom-nav .nav-item.active{color:#efd4b3;}
+.queue-list{overscroll-behavior:contain;}
+.queue-item{position:relative;transform:translate3d(0,0,0);}
+.queue-item.drop-gap{background:linear-gradient(100deg,#cfb59624,#aa8d6d17);
+  border:1px dashed #e8d2b665;box-shadow:inset 0 0 14px #d9b99916;opacity:.60;}
+.queue-item.drop-gap>*{opacity:.16;}
+.queue-drag-ghost{position:fixed!important;z-index:200;pointer-events:none;
+  border:1px solid #f7dfbb77!important;background:linear-gradient(115deg,#675747f5,#504537f7)!important;
+  border-radius:15px;box-shadow:0 12px 35px #0008,0 0 18px #e0b98742;opacity:.98;
+  will-change:transform;touch-action:none;}
+.queue-drag-ghost .handle{cursor:grabbing;}
+@media(prefers-reduced-motion:reduce){.track-title.marquee #titleInner{animation:none;}
+  .album:not(.gesture){transition-duration:110ms!important}}
 </style></head><body><main class="screen" id="screen">
 <header class="header"><div class="eyebrow">СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
 <div class="stack" id="stack" aria-label="Свайп влево — следующий трек, вправо — предыдущий"></div>
-<div class="track-title" id="title">Vundabar - Alien blues</div>
+<div class="track-title" id="title"><span id="titleInner">Vundabar - Alien blues</span></div>
 <div class="timeline" id="timeline" aria-label="Перемотка"><canvas id="wave"></canvas></div>
 <button class="play" id="play" aria-label="Воспроизведение или пауза"></button>
 <div class="times"><span id="elapsed">1:42</span><span id="duration">4:18</span></div>
-<div class="actions"><button class="action" id="shuffle" aria-label="Случайный порядок"><svg viewBox="0 0 24 24"><path d="M3 4c7 0 9 16 18 16m0 0-4-4m4 4-4 2M3 20c4 0 6-4 8-8m3-4c2-3 4-4 7-4m0 0-4-2m4 2-4 4"/></svg></button><button class="action" id="favorite" aria-label="В избранное"><svg viewBox="0 0 24 24"><path d="M20.8 4.7a5.5 5.5 0 0 0-7.8 0L12 5.8l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8c2.6 2.6 8.9 9.2 8.9 9.2s6.3-6.6 8.8-9.2a5.5 5.5 0 0 0 0-7.8z" transform="translate(0 2)"/></svg></button></div>
-<div class="overlay" id="overlay"><div class="sheet"><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="close" id="close">×</button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ · ПЕРЕТАСКИВАЙ ЗА ≡</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
+<div class="actions"><button class="action" id="shuffle" aria-label="Случайный порядок"><svg viewBox="0 0 24 24"><path d="M3 4c7 0 9 16 18 16m0 0-4-4m4 4-4 2M3 20c4 0 6-4 8-8m3-4c2-3 4-4 7-4m0 0-4-2m4 2-4 4"/></svg></button></div>
+<div class="overlay" id="overlay"><div class="sheet"><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="close" id="close">×</button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
 <div class="library-panel" id="libraryPanel">
   <div class="library-head"><h2 id="panelHeading">Библиотека</h2><button class="close-library" id="closeLibrary" aria-label="Закрыть библиотеку">×</button></div>
   <div id="libraryBrowse">
@@ -142,9 +185,9 @@
   </div>
   <div class="album-detail" id="albumDetail" hidden><button class="album-back" id="albumBack">‹ Все альбомы</button><div id="albumDetailBody"></div></div>
 </div>
-<div class="track-menu-overlay" id="trackMenu" aria-hidden="true"><div class="track-menu-sheet" role="dialog" aria-label="Действия с треком"><div id="menuTrackHeading" class="track-menu-title"></div><button id="menuPlayNext" class="track-menu-action">Играть следующим</button><button id="menuPlayNow" class="track-menu-action">Воспроизвести сейчас</button><button id="menuFavorite" class="track-menu-action">Добавить в избранное</button><button id="menuClose" class="track-menu-dismiss">Отмена</button></div></div>
+<div class="track-menu-overlay" id="trackMenu" aria-hidden="true"><div class="track-menu-sheet" role="dialog" aria-label="Действия с треком"><div id="menuTrackHeading" class="track-menu-title"></div><button id="menuPlayNext" class="track-menu-action">Играть следующим</button><button id="menuPlayNow" class="track-menu-action">Воспроизвести сейчас</button><button id="menuClose" class="track-menu-dismiss">Отмена</button></div></div>
 <nav class="bottom-nav" id="bottomNav">
-<button class="nav-item" data-tab="Главная"><svg viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10H3z"/></svg><span>Главная</span></button>
+<button class="nav-item active" data-tab="Плеер"><svg viewBox="0 0 24 24"><path d="M9 5L20 12L9 19Z" fill="currentColor" stroke="none"/></svg><span>Плеер</span></button>
 <button class="nav-item" data-tab="Библиотека"><svg viewBox="0 0 24 24"><path d="M4 4v16M9 4v16M14 6v14M19 3v17"/></svg><span>Библиотека</span></button>
 <button class="nav-item" data-tab="Профиль"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-5 16-5 16 0"/></svg><span>Профиль</span></button>
 </nav>
