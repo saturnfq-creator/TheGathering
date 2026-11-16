@@ -1,36 +1,40 @@
-# The Gathering — Android starter (0.1.0)
+# The Gathering 0.2.0-beta1 — Android
 
-This is the first native Android project shell around the approved HTML player UI.
+Исправленная версия исходного проекта. Не APK: сборка выполняется GitHub Actions.
 
-## Included
-- WebView-hosted responsive UI with the bottom navigation restored.
-- Android MediaStore scan for on-device audio (permission requested at launch).
-- Embedded ID3 reading remains available in the web prototype for manually imported files.
-- Media3 ExoPlayer + MediaSessionService playback service scaffold.
-- Native bridge from the HTML UI to MediaStore scan and Media3 playback.
+## Исправлено/изменено
 
-## Build
-1. Open this folder in Android Studio (JDK 17).
-2. Allow Gradle sync and download dependencies.
-3. Run on an Android device (API 26+).
-4. Grant the audio permission when prompted.
+- Управление ExoPlayer через асинхронный MediaController + MediaSessionService вместо отдельных интентов при каждом нажатии.
+- Одна очередь Media3: выбор трека, Play/Pause, переходы, перестановка элементов без остановки текущей песни.
+- Таймлайн отображает реальную позицию, умеет перематывать пальцем (применяет перемотку при отпускании), обновляется примерно каждые 650 мс.
+- Альбомы группируются по MediaStore ALBUM_ID; доступны вкладки «Альбомы», «Исполнители», «Треки».
+- В очереди: текущий трек отдельным блоком сверху, далее список будущих треков, перетаскивание за ≡. При огромной библиотеке список подгружается частями.
+- При быстром свайпе не создаются многослойные обложки и не выполняется тяжёлый размазывающий фильтр для картинок; задние карты получают мягкое затухание только по краю.
+- Перерисовка таймлайна ограничена 12 кадрами/сек при низком разрешении, без тяжёлого размытия в Canvas.
+- Поиск сохранён по названию, исполнителю и альбому.
+- Рендер-процесс WebView при аварийном завершении пересоздаётся вместо завершения Android Activity.
 
-The project is source code, not a prebuilt APK. It has not been compiled in this environment because Android SDK/Gradle are not installed here.
+## Как обновить проект на GitHub
 
-## Current MVP boundaries
-- Device library scan is implemented through MediaStore.
-- Selecting a scanned track sends its content URI to the Media3 playback service.
-- The current UI is still the HTML prototype; Home/Profile are placeholders and the library/search panels are early scaffolding.
-- Queue persistence, album-art fallback handling, robust service/controller binding, headset/system notification validation, and full app-wide shared navigation are next hardening tasks.
+1. Распакуй этот ZIP на компьютере.
+2. Открой https://github.com/saturnfq-creator/TheGathering/upload/main
+3. Перетащи **содержимое** распакованной папки в GitHub. Важно: файлы должны попадать в корень репозитория (`app`, `tests`, `.github`, `build.gradle.kts`, `settings.gradle.kts`).
+4. Нажми **Commit changes**.
+5. Открой Actions → Build The Gathering APK. Сборка обычно запускается автоматически после commit.
+6. После зелёной галочки скачай Artifact и достань из ZIP файл `app-debug.apk`.
 
-## Build an APK without Android Studio (GitHub Actions)
-1. Create a new GitHub repository (private is fine).
-2. Upload the *contents* of this project folder to the repository root, including the hidden `.github` directory.
-3. Open the repository's **Actions** tab.
-4. Select **Build The Gathering APK** and choose **Run workflow**.
-5. After the build succeeds, open the run and download **TheGathering-debug-apk** from Artifacts.
-6. Unzip the artifact and install `app-debug.apk` on your Android phone.
+### Если GitHub не загрузит скрытую папку `.github`
 
-This is a debug APK, signed with the automatically generated debug key. Android may ask for permission to install apps from your browser/files app. Do not disable general device security protections.
+Не страшно: уже существующий `build-apk.yml` из предыдущей успешной сборки продолжит работать. Для версии 0.2 важно загрузить папку `app` и её содержимое. Тест `tests/logic-smoke-test.cjs` автоматически запускается только если обновлена и `.github/workflows/build-apk.yml`.
 
-**Important:** This build has not been run or tested here. The current project is an early MVP: it may require fixes after the first cloud build and runtime testing.
+### Установка на телефон
+
+У GitHub Actions каждый новый debug APK может быть подписан другим временным ключом. Если Android пишет «Не удалось установить приложение» или «Конфликт пакета», сначала удали старую бета-версию The Gathering, затем установи новую. MP3 на телефоне не удалятся, но избранное из старой установки может сброситься.
+
+## Проверка
+
+Локальная JS-проверка: `node tests/logic-smoke-test.cjs` — проверяет порядок очереди, перестановку, защиту от устаревших событий и обновление позиции.
+
+**Ограничения:** в этой среде не было Android SDK, поэтому Kotlin/Gradle не компилировались и APK не проходил тесты на реальном телефоне. Исправление нагрева и вылетов — архитектурное и профилактическое; гарантировать их исчезновение без Android crash log и устройства нельзя. Перетягивание проверено в логике JS и при синхронизации с Media3 API, но не непосредственно пальцем на Samsung.
+
+Если 0.2 всё ещё падает, нужны последние строки журнала Android (`FATAL EXCEPTION`, `AndroidRuntime`, `TheGathering`), чтобы найти точную причину. Не отправляй полный системный отчёт без проверки на личные данные.
