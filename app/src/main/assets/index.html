@@ -188,10 +188,64 @@ button,svg{-webkit-user-select:none;user-select:none;}
 .queue-item.drag-settling{opacity:0;}
 .timeline{isolation:isolate;}
 .timeline canvas{border-radius:inherit;}
+
+/* v0.6 — slow, tactile card depth without expensive GPU image filters */
+.stack{--aura-a:#ccb59a91;--aura-b:#a6a1ba91;isolation:isolate;}
+.stack::before{
+  inset:-12% -14% -12%;border-radius:38%;filter:none;
+  background:radial-gradient(ellipse 57% 49% at 44% 51%,var(--aura-a),transparent 100%),
+             radial-gradient(ellipse 54% 49% at 62% 54%,var(--aura-b),transparent 100%);
+  opacity:.53;transform:translate3d(0,0,0) scale(1.08);
+  will-change:auto;pointer-events:none;
+}
+@keyframes gatheringAuraBreath{
+  0%,100%{opacity:.46;transform:translate3d(0,0,0) scale(1.05)}
+  50%{opacity:.62;transform:translate3d(0,0,0) scale(1.12)}
+}
+html.is-playing:not(.lite-motion) .stack::before{animation:gatheringAuraBreath 1.5s ease-in-out infinite;will-change:opacity,transform;}
+html.lite-motion .stack::before{animation:none!important;opacity:.38;}
+html.lite-motion .bottom-nav,html.lite-motion .play{backdrop-filter:none;-webkit-backdrop-filter:none;}
+html.lite-motion .timeline canvas{filter:none;}
+html.lite-motion .album.back1,html.lite-motion .album.back2{
+  filter:none!important;mask-image:none!important;-webkit-mask-image:none!important;opacity:.69;
+}
+.album.deck-card{
+  transition:transform 570ms cubic-bezier(.16,.83,.16,1),opacity 535ms ease-out!important;
+  will-change:auto;contain:layout style;
+}
+.stack.depth-drag .album.deck-card{transition:none!important;will-change:transform,opacity;}
+.stack.deck-mode .album{box-shadow:0 10px 26px #0006;}
+.track-title{transition:opacity 240ms ease;}
+.stack.deck-mode ~ .track-title{opacity:0;}
+.deck-track-title{
+  position:absolute;top:55%;left:5%;right:5%;height:1.3em;
+  text-align:center;font-size:6.2cqw;line-height:1.15;font-weight:800;
+  letter-spacing:-.15cqw;text-shadow:0 1px 12px #0007;
+  z-index:5;opacity:0;pointer-events:none;
+  transition:opacity 260ms ease;
+}
+.stack.deck-mode ~ .deck-track-title{opacity:1;}
+.stack.depth-drag ~ .deck-track-title .deck-caption-line{transition:none!important;}
+.deck-caption-line{
+  display:block;position:absolute;inset:0;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;opacity:0;
+  transform:translate3d(0,7px,0);
+  transition:opacity 330ms ease-out,transform 330ms cubic-bezier(.2,.75,.2,1);
+}
+@media(max-height:700px) and (orientation:portrait){.deck-track-title{top:52%;font-size:5.6cqw;}}
+@media(orientation:landscape) and (max-height:560px){
+  .deck-track-title{top:16%;left:5%;right:58%;font-size:4.3cqw;white-space:normal;}
+}
+@media(prefers-reduced-motion:reduce){
+ html .stack::before{animation:none!important}
+ .album.deck-card{transition-duration:90ms!important}
+ .deck-caption-line{transition-duration:100ms!important}
+}
 </style></head><body><main class="screen" id="screen">
 <header class="header"><div class="eyebrow">СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
 <div class="stack" id="stack" aria-label="Свайп влево — следующий трек, вправо — предыдущий"></div>
 <div class="track-title" id="title"><span id="titleInner">Vundabar - Alien blues</span></div>
+<div class="deck-track-title" id="deckTitle" aria-live="off" aria-hidden="true"></div>
 <div class="timeline" id="timeline" aria-label="Перемотка"><canvas id="wave"></canvas></div>
 <button class="play" id="play" aria-label="Воспроизведение или пауза"></button>
 <div class="times"><span id="elapsed">1:42</span><span id="duration">4:18</span></div>

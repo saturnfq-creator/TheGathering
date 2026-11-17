@@ -1,11 +1,19 @@
 'use strict';
-// The Gathering 0.4: reversible gestures, magnetic queue sorting and native Media3 playback.
+// The Gathering 0.6: deliberate depth browsing and low-overhead album aura.
+// Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
 const native = window.AndroidBridge || null;
 const audio = $('#audio');
 const DEFAULT_COLORS = ['#a48ca5', '#918e78'];
 const coverData = 'file:///android_asset/demo_cover.png';
+// Save image-processing and continuously composited glass effects on modest devices.
+// WebView often does not expose deviceMemory, so treat it only as an optional hint.
+const lowPowerDevice = (Number(navigator.deviceMemory) > 0 && Number(navigator.deviceMemory) <= 3) ||
+  (Number(navigator.hardwareConcurrency) > 0 && Number(navigator.hardwareConcurrency) <= 4) ||
+  !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+if(lowPowerDevice) document.documentElement.classList.add('lite-motion');
+
 let tracks = [
   {id:'demo:1',title:'Alien Blues',artist:'Vundabar',album:'Gawk',cover:coverData,duration:258,colors:['#8c8068','#c4a990']},
   {id:'demo:2',title:'Reptilia',artist:'The Strokes',album:'',duration:219,colors:['#ad5c50','#574547']},
@@ -70,6 +78,7 @@ function updatePlay() {
     ? '<svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'
     : '<svg viewBox="0 0 24 24"><path d="M7 4 Q7 3 9 4 L20 11 Q22 12 20 13 L9 20 Q7 21 7 19Z"/></svg>';
   $('#play').setAttribute('aria-label', playing ? 'Пауза' : 'Воспроизвести');
+  document.documentElement.classList.toggle('is-playing', !!playing);
 }
 function activeDuration() {
   const t = track();
@@ -139,8 +148,30 @@ let deckMode=false;
 let deckDepth=0;
 let deckPaintDepth=0;
 let deckCards=new Map();
+let deckLabelNodes=new Map();
 let deckHorizontalTimer=0;
 let deckTransitioning=false;
+let lastAuraId='';
+// A gentle compositor-only pulse; it deliberately does not run an FFT/visualizer.
+function paintCoverAura(id) {
+  if(!id || id === lastAuraId)return;
+  lastAuraId=id;
+  const colors=track(id)?.colors || DEFAULT_COLORS;
+  const tint=color=>/^#[a-f0-9]{6}$/i.test(String(color))?color+'91':'#b3a29191';
+  const stack=$('#stack');
+  stack.style.setProperty('--aura-a',tint(colors[0]));
+  stack.style.setProperty('--aura-b',tint(colors[1]));
+}
+const DECK_STEP_RATIO=.78;
+const DECK_MAX_ADVANCE=1;
+function deckSwipeStep(){return Math.max(205,$('#stack').clientHeight*DECK_STEP_RATIO);}
+function clampDeckDepth(depth){return Math.max(0,Math.min(order.length-1,depth));}
+function depthFromGesture(gesture){
+  // A single vertical gesture moves at most one cover; no velocity acceleration.
+  const delta=Math.max(-DECK_MAX_ADVANCE,Math.min(DECK_MAX_ADVANCE,gesture.dy/deckSwipeStep()));
+  return clampDeckDepth(gesture.startDepth+delta);
+}
+
 function deckIdAt(offset){
   const p=index();
   return p<0||offset<0||offset>=order.length?null:order[(p+offset)%order.length];
@@ -151,7 +182,10 @@ function leaveDeckMode(){
   deckMode=false;
   deckDepth=0;deckPaintDepth=0;
   deckCards.clear();
+  deckLabelNodes.clear();
+  $('#deckTitle').replaceChildren();
   $('#stack').classList.remove('deck-mode','depth-drag');
+  $('#deckTitle').setAttribute('aria-hidden','true');
 }
 function enterDeckMode(){
   if(deckMode)return true;
@@ -159,6 +193,7 @@ function enterDeckMode(){
   deckMode=true;
   deckCards=new Map();
   const stack=$('#stack');stack.classList.add('deck-mode');
+  $('#deckTitle').setAttribute('aria-hidden','false');
   // Reuse the decoded images of the three existing layers. No flash on entry.
   [stackCards.front,stackCards.back1,stackCards.back2].forEach((card,i)=>{
     if(i>=order.length)return;
@@ -172,15 +207,45 @@ function enterDeckMode(){
   paintDeck(0,false);
   return true;
 }
+function paintDeckTitle(depth){
+  // Each title keeps its own DOM node and offset across depth boundaries.
+  // This prevents the text flashing when the cover at depth N becomes front.
+  const low=Math.max(0,Math.floor(depth)-1);
+  const high=Math.min(order.length-1,Math.ceil(depth)+2);
+  const root=$('#deckTitle');
+  for(const [offset,node] of deckLabelNodes){
+    if(offset<low||offset>high){node.remove();deckLabelNodes.delete(offset);}
+  }
+  const fragment=document.createDocumentFragment();
+  for(let offset=low;offset<=high;offset++){
+    if(deckLabelNodes.has(offset))continue;
+    const t=track(deckIdAt(offset));
+    if(!t)continue;
+    const node=document.createElement('span');
+    node.className='deck-caption-line';
+    node.dataset.offset=String(offset);
+    node.textContent=t.artist+' — '+t.title;
+    deckLabelNodes.set(offset,node);
+    fragment.append(node);
+  }
+  root.append(fragment);
+  for(const [offset,node] of deckLabelNodes){
+    const difference=offset-depth;
+    node.style.opacity=String(Math.max(0,1-Math.abs(difference)));
+    node.style.transform=`translate3d(0,${7*difference}px,0)`;
+  }
+}
 function paintDeck(depth,isDragging){
   if(!deckMode)return;
-  depth=Math.max(0,Math.min(Math.max(0,order.length-1),depth));
+  depth=clampDeckDepth(depth);
   deckPaintDepth=depth;
   const stack=$('#stack');
+  // On release, commit the last finger-driven position before enabling easing.
+  if(!isDragging && stack.classList.contains('depth-drag'))stack.getBoundingClientRect();
   stack.classList.toggle('depth-drag',!!isDragging);
   const low=Math.max(0,Math.floor(depth)-1);
-  const high=Math.min(order.length-1,Math.ceil(depth)+5);
-  // Capped rendering keeps Android WebView below ~9 decoded album images.
+  const high=Math.min(order.length-1,Math.ceil(depth)+4);
+  // Only at most 7 decoded cover elements around the active depth.
   for(const [offset,card] of deckCards){
     if(offset<low||offset>high){card.remove();deckCards.delete(offset);}
   }
@@ -196,7 +261,7 @@ function paintDeck(depth,isDragging){
       fragment.append(card);
     }else if(card.dataset.id!==String(id)){
       card.dataset.id=String(id);
-      card.innerHTML=art(track(id),offset<=depth+2);
+      card.innerHTML=art(track(id),offset<=depth+1);
     }
   }
   stack.append(fragment);
@@ -204,20 +269,26 @@ function paintDeck(depth,isDragging){
     const relative=offset-depth;
     let y,scale,opacity;
     if(relative>=0){
-      const r=Math.min(7,relative);
-      y=-(8.3*r-.26*r*r);
-      scale=Math.max(.67,1-.051*r);
-      opacity=Math.max(.16,1-.135*r);
+      // Covers rise gently out of the stack. The next card is translucent until
+      // it reaches the front rather than appearing fully opaque at once.
+      const r=Math.min(5,relative);
+      y=-(7.8*r-.25*r*r);
+      scale=Math.max(.76,1-.049*r);
+      opacity=r<=1 ? 1-.63*r : Math.max(.06,.37-.085*(r-1));
     }else{
-      // The explored cards leave towards the user, never turn into giant images.
-      const r=Math.min(1.2,-relative);
-      y=108*r;scale=1+.035*r;opacity=Math.max(0,1-1.35*r);
+      // The outgoing front cover moves only a little DOWN while fading away.
+      const r=Math.min(1,-relative);
+      y=17*r;
+      scale=1-.024*r;
+      opacity=Math.max(0,1-r);
     }
     card.style.zIndex=String(200-offset);
     card.style.transform=`translate3d(0,${y}%,0) scale(${scale})`;
     card.style.opacity=String(opacity);
-    card.style.pointerEvents=(relative>=-.2 && relative<=2.7)?'auto':'none';
+    card.style.pointerEvents=(relative>=-.1 && relative<=2.7)?'auto':'none';
   }
+  paintDeckTitle(depth);
+  paintCoverAura(deckIdAt(Math.round(depth)));
 }
 function focusDeckOffset(){return Math.max(0,Math.min(order.length-1,Math.round(deckDepth)));}
 function selectDeckCover(offset){
@@ -232,14 +303,10 @@ function selectDeckCover(offset){
   choose(id,offset>0?1:-1);
 }
 function settleDeckDepth(depth){
-  deckDepth=Math.max(0,Math.min(order.length-1,Math.round(depth)));
-  if(deckDepth===0){
-    // Once back at the first track, normal horizontal swipe layers return.
-    paintDeck(0,false);
-    setTimeout(()=>{
-      if(deckMode && !swipe && deckDepth===0){leaveDeckMode();stackMarkup();}
-    },285);
-  }else paintDeck(deckDepth,false);
+  deckDepth=clampDeckDepth(Math.round(depth));
+  // Stay in the browsing mode, even at depth zero. Horizontal swipes are only
+  // re-enabled when a cover is explicitly tapped to select/play it.
+  paintDeck(deckDepth,false);
 }
 function onDeckPlaybackAdvance(oldIndex,newIndex){
   if(!deckMode)return false;
@@ -269,6 +336,7 @@ function stackMarkup() {
   };
   $('#stack').replaceChildren(cards.back2,cards.back1,cards.front,cards.prev);
   stackCards=cards;
+  paintCoverAura(current);
   updatePlayerChrome();
 }
 function setCardRole(card,role,recycle=false) {
@@ -855,44 +923,20 @@ function resetCoverGesture(){
 // A single pointer recogniser owns the cover. Lock an axis only after a small
 // movement, so vertical depth browsing cannot trigger horizontal song changes.
 function deckDragStep(g){
-  const step=Math.max(65,Math.min(120,stack.clientHeight*.29));
-  g.depthValue=Math.max(0,Math.min(order.length-1,g.startDepth+g.dy/step));
+  g.depthValue=depthFromGesture(g);
   paintDeck(g.depthValue,true);
-}
-function paintDeckHorizontal(dx){
-  if(!deckMode)return;
-  paintDeck(deckDepth,true);
-  const offset=focusDeckOffset();
-  const card=deckCards.get(offset);
-  if(!card)return;
-  const width=Math.max(1,stack.clientWidth);
-  const distance=Math.max(-width,Math.min(width,dx));
-  const progress=Math.abs(distance)/width;
-  card.style.transform=`translate3d(${distance}px,0,0) rotate(${distance/width*7}deg) scale(${1-.05*progress})`;
-  card.style.opacity=String(1-.35*progress);
-  const incoming=deckCards.get(offset+(dx<0?1:-1));
-  if(incoming){
-    if(dx>0){
-      incoming.style.transform=`translate3d(${-(1-progress)*105}%,0,0) rotate(${-8*(1-progress)}deg) scale(${.94+.06*progress})`;
-    }else incoming.style.transform=`translate3d(0,${-8*(1-progress)}%,0) scale(${.95+.05*progress})`;
-    incoming.style.opacity=String(.2+.8*progress);
-    incoming.style.zIndex=String(205);
-  }
 }
 stack.addEventListener('pointerdown',e=>{
   if(e.isPrimary===false || stackAnimating || deckTransitioning)return;
   swipe={pointer:e.pointerId,x:e.clientX,y:e.clientY,dx:0,dy:0,axis:null,
     startDepth:deckDepth,depthValue:deckDepth,painted:false,
-    lastY:e.clientY,lastTime:performance.now(),velocity:0};
+    tapOffset:deckMode?Number(e.target.closest?.('.deck-card')?.dataset.offset):NaN};
   stack.setPointerCapture(e.pointerId);
 });
 stack.addEventListener('pointermove',e=>{
   const g=swipe;
   if(!g||g.pointer!==e.pointerId||stackAnimating)return;
   g.dx=e.clientX-g.x;g.dy=e.clientY-g.y;
-  const now=performance.now(),dt=Math.max(1,now-g.lastTime);
-  g.velocity=(e.clientY-g.lastY)/dt;
-  g.lastY=e.clientY;g.lastTime=now;
   if(!g.axis){
     if(Math.max(Math.abs(g.dx),Math.abs(g.dy))<11)return;
     if(Math.abs(g.dy)>Math.abs(g.dx)*1.17){
@@ -905,8 +949,9 @@ stack.addEventListener('pointermove',e=>{
     if(swipeFrame)cancelAnimationFrame(swipeFrame);
     swipeFrame=requestAnimationFrame(()=>{swipeFrame=0;if(swipe===g)deckDragStep(g);});
   }else if(deckMode){
-    if(swipeFrame)cancelAnimationFrame(swipeFrame);
-    swipeFrame=requestAnimationFrame(()=>{swipeFrame=0;if(swipe===g)paintDeckHorizontal(g.dx);});
+    // Once depth browsing begins, a horizontal swipe must NEVER select music.
+    // Only a deliberate tap on a cover can leave the browsing mode.
+    return;
   }else if(!swipeFrame){
     swipeFrame=requestAnimationFrame(paintCoverGesture);
   }
@@ -919,31 +964,14 @@ stack.addEventListener('pointerup',e=>{
   if(g.axis==='horizontal' && !deckMode)paintCoverGesture();
   swipe=null;
   if(g.axis==='vertical'){
-    const step=Math.max(65,Math.min(120,stack.clientHeight*.29));
-    const floating=Math.max(0,Math.min(order.length-1,g.startDepth+g.dy/step));
-    // Small velocity-assisted snap, capped to avoid accidental giant jumps.
-    const predicted=floating+Math.max(-.35,Math.min(.35,g.velocity*.14));
-    settleDeckDepth(predicted);
+    settleDeckDepth(depthFromGesture(g));
     return;
   }
   if(g.axis==='horizontal'){
     const accepted=Math.abs(g.dx)>Math.max(45,stack.clientWidth*.16) &&
       Math.abs(g.dx)>Math.abs(g.dy)*1.1;
     if(deckMode){
-      if(!accepted){paintDeck(deckDepth,false);return;}
-      // While looking deeper, horizontal swipes act on the visible front card.
-      const base=deckIdAt(focusDeckOffset());
-      const idx=order.indexOf(base);
-      if(idx<0)return;
-      const dir=g.dx<0?1:-1;
-      const targetId=order[(idx+dir+order.length)%order.length];
-      deckTransitioning=true;
-      paintDeckHorizontal(g.dx);
-      deckHorizontalTimer=setTimeout(()=>{
-        deckHorizontalTimer=0;
-        deckTransitioning=false;
-        if(targetId)choose(targetId,dir);
-      },165);
+      paintDeck(deckDepth,false);
       return;
     }
     if(accepted){if(g.dx<0)next();else prev();}
@@ -953,9 +981,8 @@ stack.addEventListener('pointerup',e=>{
   // A tap on a visible depth cover selects that song; tapping during playback
   // never jumps to a different track by accident without an explicit target.
   if(deckMode){
-    const card=e.target.closest?.('.deck-card');
-    const depth=card?Number(card.dataset.offset):NaN;
-    if(Number.isInteger(depth))selectDeckCover(depth);
+    // Pointer capture retargets pointerup to #stack. Remember the original card.
+    if(Number.isInteger(g.tapOffset))selectDeckCover(g.tapOffset);
   }
 });
 stack.addEventListener('pointercancel',e=>{
@@ -973,8 +1000,8 @@ stack.addEventListener('lostpointercapture',e=>{
 });
 document.addEventListener('keydown', e => {
   if ($('#overlay').classList.contains('open')) return;
-  if (e.key==='ArrowLeft') next();
-  if (e.key==='ArrowRight') prev();
+  if (!deckMode && e.key==='ArrowLeft') next();
+  if (!deckMode && e.key==='ArrowRight') prev();
   if (e.key===' ' && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
     e.preventDefault();$('#play').click();
   }
@@ -1167,6 +1194,7 @@ function appNavigateBack(){
   if(sheetStage!=='closed'){setQueueSheet('closed');return true;}
   if(activeAlbumKey){closeAlbum();return true;}
   if($('#libraryPanel').classList.contains('open')){closeLibrary();return true;}
+  if(deckMode){leaveDeckMode();stackMarkup();return true;}
   return false;
 }
 window.appNavigateBack=appNavigateBack;
@@ -1268,13 +1296,18 @@ audio.ontimeupdate=()=>{
 };
 audio.onended=next;
 
-// 0.3: interpolate the Media3 position between 650ms callbacks.
-// The translucent blurred lens is cheap: the canvas is low-resolution, under 30fps.
+// 0.6: interpolate Media3 time, using a limited canvas refresh on modest devices.
+// No FFT, equalizer, canvas glow animation or per-frame cover CSS updates.
 const wave=$('#wave');
+const waveContext=wave.getContext('2d',{alpha:false});
+let cachedWaveFill=null,cachedWaveWidth=-1;
 function frame(now) {
-  requestAnimationFrame(frame);
-  if(document.hidden)return;
-  const speed=scrub ? 25 : (playing ? 32 : 85);
+  // Don't wake WebView 60 times a second while playback is paused or backgrounded.
+  if(document.hidden){setTimeout(()=>requestAnimationFrame(frame),700);return;}
+  if(!playing && !scrub)setTimeout(()=>requestAnimationFrame(frame),90);
+  else requestAnimationFrame(frame);
+  // ~24fps while playing, ~16fps on low-end devices, under 4fps on pause.
+  const speed=scrub ? 20 : (playing ? (lowPowerDevice?62:42) : 310);
   if(now-lastWaveTime < speed)return;
   lastWaveTime=now;
   updateTimes(now);
@@ -1283,16 +1316,21 @@ function frame(now) {
   const ratio=Math.min(window.devicePixelRatio||1,1.1);
   const w=Math.min(560,Math.round(rect.width*ratio));
   const h=Math.min(90,Math.round(rect.height*ratio));
-  if(wave.width!==w||wave.height!==h){wave.width=w;wave.height=h;}
-  const c=wave.getContext('2d',{alpha:false});
+  if(wave.width!==w||wave.height!==h){wave.width=w;wave.height=h;cachedWaveFill=null;cachedWaveWidth=-1;}
+  const c=waveContext;
   if(!c || !track())return;
   const dur=activeDuration();
   const progress=dur>0 ? Math.min(1,visiblePosition(now)/dur) : 0;
   c.fillStyle='#4c463e';c.fillRect(0,0,w,h);
   const filled=w*progress;
-  const fill=c.createLinearGradient(0,0,w,0);
-  fill.addColorStop(0,'#fff0d5');fill.addColorStop(.65,'#f4dbb7');fill.addColorStop(1,'#d7b890');
-  c.fillStyle=fill;
+  if(!cachedWaveFill||cachedWaveWidth!==w){
+    cachedWaveFill=c.createLinearGradient(0,0,w,0);
+    cachedWaveFill.addColorStop(0,'#fff0d5');
+    cachedWaveFill.addColorStop(.65,'#f4dbb7');
+    cachedWaveFill.addColorStop(1,'#d7b890');
+    cachedWaveWidth=w;
+  }
+  c.fillStyle=cachedWaveFill;
   c.beginPath();c.moveTo(0,0);
   const amplitude=Math.max(2,h*.14);
   for(let y=0;y<=h;y+=Math.max(2,Math.round(h/18))){
@@ -1308,7 +1346,7 @@ function frame(now) {
     }
     c.lineWidth=1.6;
     c.strokeStyle='#fff7e8b3';
-    c.shadowColor='#ffe0baaa';c.shadowBlur=7;c.stroke();c.restore();
+    c.shadowColor='#ffe0baaa';c.shadowBlur=lowPowerDevice?0:7;c.stroke();c.restore();
   }
 }
 

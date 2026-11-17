@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const code = fs.readFileSync(__dirname+'/../app/src/main/assets/app.js','utf8');
 const fake = () => ({
   style:{setProperty(){},removeProperty(){}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
-  textContent:'',innerHTML:'',value:'',attributes:{},
+  textContent:'',innerHTML:'',value:'',clientHeight:300,clientWidth:300,attributes:{},
   setAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
   replaceChildren(...els){this.children=els},appendChild(el){this.children.push(el)},append(){},remove(){},
   querySelector(){return null},querySelectorAll(){return []},
@@ -25,8 +25,9 @@ const native = {
 };
 let testClock=10000;
 const sandbox = {
-  document:{querySelector:get,querySelectorAll:()=>[],createElement:()=>fake(),createDocumentFragment:()=>fake(),hidden:false,activeElement:fake(),addEventListener(){}},
+  document:{querySelector:get,querySelectorAll:()=>[],createElement:()=>fake(),createDocumentFragment:()=>fake(),documentElement:fake(),hidden:false,activeElement:fake(),addEventListener(){}},
   window:{AndroidBridge:native,devicePixelRatio:1,addEventListener(){}},
+  navigator:{hardwareConcurrency:8,deviceMemory:8},
   localStorage:{getItem:()=>null,setItem(){}},
   requestAnimationFrame(){return 1},cancelAnimationFrame(){},clearTimeout(){},setTimeout(){return 1},
   console,Intl,Map,Set,Math,Number,String,JSON,Date,URL,performance:{now:()=>testClock},
@@ -99,6 +100,9 @@ assert.equal(expr('deckIdAt(0)'),'a');
 assert.equal(expr('deckIdAt(2)'),'c');
 assert.equal(expr('deckIdAt(-1)'),null);
 assert.equal(expr('deckIdAt(4)'),null);
+expr('deckMode=true;deckDepth=1;');
+assert.equal(expr('appNavigateBack()'),true); // escape depth browse without exiting Android
+assert.equal(expr('deckMode'),false);
 // UI contract: the classic X closures are gone, depth deck and native back exist.
 assert(html.includes('id="queueGrab"'));
 assert(!html.includes('id="close"'));
@@ -111,4 +115,18 @@ assert(code.includes('queueList.setPointerCapture(e.pointerId)'));
 assert(code.includes("queueList.addEventListener('lostpointercapture'"));
 assert(code.includes('function paintDeck('));
 
-console.log('PASS v0.5: queue, playback clock, virtual depth deck, bottom sheet and Android back contracts');
+// The 0.6 deck must advance at most one position per swipe, with no flick inertia.
+expr('order=["a","b","c","d"];current="a";');
+assert.equal(expr('Math.round(depthFromGesture({startDepth:0,dy:140}))'),1);
+assert.equal(expr('depthFromGesture({startDepth:0,dy:4000})'),1);
+assert.equal(expr('depthFromGesture({startDepth:2,dy:-4000})'),1);
+assert.equal(expr('depthFromGesture({startDepth:0,dy:-4000})'),0);
+assert(code.includes('if(deckMode){\n      paintDeck(deckDepth,false);\n      return;'));
+assert(!code.includes('function paintDeckHorizontal('));
+assert(code.includes('tapOffset:deckMode?Number('));
+assert(code.includes('selectDeckCover(g.tapOffset)'));
+assert(html.includes('id="deckTitle"') && code.includes('deckLabelNodes=new Map()'));
+assert(!html.includes('filter:blur(19px);opacity:.55;\n  background:radial-gradient'));
+assert(code.includes('lowPowerDevice?62:42'));
+assert(html.includes('gatheringAuraBreath'));
+console.log('PASS v0.6: queue, clock, slow bounded depth, tap-only selection, captions, glow, Android back');
