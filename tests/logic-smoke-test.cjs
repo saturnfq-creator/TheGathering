@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const code = fs.readFileSync(__dirname+'/../app/src/main/assets/app.js','utf8');
 const fake = () => ({
-  style:{setProperty(){},removeProperty(){}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
+  style:{setProperty(){},removeProperty(){},getPropertyValue(){return ""}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
   textContent:'',innerHTML:'',value:'',clientHeight:300,clientWidth:300,attributes:{},
   setAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
   replaceChildren(...els){this.children=els},appendChild(el){this.children.push(el)},append(){},remove(){},
@@ -115,12 +115,12 @@ assert(code.includes('queueList.setPointerCapture(e.pointerId)'));
 assert(code.includes("queueList.addEventListener('lostpointercapture'"));
 assert(code.includes('function paintDeck('));
 
-// The 0.6 deck must advance at most one position per swipe, with no flick inertia.
+// v0.7: multiple covers per flick and stronger upward return.
 expr('order=["a","b","c","d"];current="a";');
-assert.equal(expr('Math.round(depthFromGesture({startDepth:0,dy:140}))'),1);
-assert.equal(expr('depthFromGesture({startDepth:0,dy:4000})'),1);
-assert.equal(expr('depthFromGesture({startDepth:2,dy:-4000})'),1);
-assert.equal(expr('depthFromGesture({startDepth:0,dy:-4000})'),0);
+assert(expr('depthFromGesture({startDepth:0,dy:420})')>1);
+assert.equal(expr('projectedDeckDepth({startDepth:0,dy:2000,velocity:8})'),3);
+assert.equal(expr('projectedDeckDepth({startDepth:3,dy:-2000,velocity:-8})'),0);
+assert(expr('depthFromGesture({startDepth:3,dy:-140})')<expr('depthFromGesture({startDepth:0,dy:140})')+1);
 assert(code.includes('if(deckMode){\n      paintDeck(deckDepth,false);\n      return;'));
 assert(!code.includes('function paintDeckHorizontal('));
 assert(code.includes('tapOffset:deckMode?Number('));
@@ -128,5 +128,11 @@ assert(code.includes('selectDeckCover(g.tapOffset)'));
 assert(html.includes('id="deckTitle"') && code.includes('deckLabelNodes=new Map()'));
 assert(!html.includes('filter:blur(19px);opacity:.55;\n  background:radial-gradient'));
 assert(code.includes('lowPowerDevice?62:42'));
+assert(code.includes('native.moveQueueItem('));
+assert(code.includes('function updateSheetSwipe('));
+assert(code.includes('function crossfadeAlbumScene('));
+assert(code.includes('window.nativeCoverPalette='));
+assert(java.includes('fun moveQueueItem('));
+assert(java.includes('fun requestCoverPalette('));
 assert(html.includes('gatheringAuraBreath'));
-console.log('PASS v0.6: queue, clock, slow bounded depth, tap-only selection, captions, glow, Android back');
+console.log('PASS v0.7: queue, time, kinetic depth, responsive sheet, targeted reorder, palette, native back');

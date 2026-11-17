@@ -241,6 +241,32 @@ html.lite-motion .album.back1,html.lite-motion .album.back2{
  .album.deck-card{transition-duration:90ms!important}
  .deck-caption-line{transition-duration:100ms!important}
 }
+/* v0.7: luminous colour-matched aura without live blur/FFT, and live sheet */
+.stack::before{
+  inset:-26% -25% -24%; border-radius:43%; filter:none;
+  background:radial-gradient(ellipse 47% 49% at 35% 47%,var(--aura-a,#e6ac91bb),transparent 100%),
+             radial-gradient(ellipse 48% 51% at 69% 60%,var(--aura-b,#b3a7d1bb),transparent 100%),
+             radial-gradient(ellipse 43% 40% at 50% 51%,#f0d6b55a,transparent 95%);
+  opacity:.78;transform:translate3d(0,0,0) scale(1.04);
+}
+html.is-playing:not(.lite-motion) .stack::before{animation:gatheringAuraBreath 2.2s ease-in-out infinite;}
+@keyframes gatheringAuraBreath{
+  0%,100%{opacity:.64;transform:translate3d(0,0,0) scale(1.02)}
+  50%{opacity:.85;transform:translate3d(0,0,0) scale(1.09)}
+}
+html.lite-motion .stack::before{opacity:.58;animation:none!important;}
+.stack-scene-old{position:absolute;z-index:8!important;pointer-events:none!important;isolation:isolate;}
+.stack-scene-old::before{animation:none!important;}
+.stack.deck-mode .album.deck-card{
+  /* Darken the browsing stack slightly: no longer the playing-now artwork. */
+  box-shadow:0 10px 26px #0008;
+}
+.stack.deck-mode .album.deck-card::after{content:"";position:absolute;inset:0;
+  background:#11111b31;border-radius:inherit;pointer-events:none;}
+.sheet.sheet-following{transition:none!important;will-change:height,transform;}
+.sheet-grab-area,.sheet-header,.queue-now{touch-action:none;}
+/* Visually land a dragged queue row immediately; native reorder is async. */
+.queue-item.drag-settling{opacity:1!important;}
 </style></head><body><main class="screen" id="screen">
 <header class="header"><div class="eyebrow">СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
 <div class="stack" id="stack" aria-label="Свайп влево — следующий трек, вправо — предыдущий"></div>

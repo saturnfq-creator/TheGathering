@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.6: deliberate depth browsing and low-overhead album aura.
+// The Gathering 0.7: kinetic depth browsing, live sheet gestures, one-item Media3 moves.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -152,33 +152,111 @@ let deckLabelNodes=new Map();
 let deckHorizontalTimer=0;
 let deckTransitioning=false;
 let lastAuraId='';
-// A gentle compositor-only pulse; it deliberately does not run an FFT/visualizer.
-function paintCoverAura(id) {
-  if(!id || id === lastAuraId)return;
-  lastAuraId=id;
-  const colors=track(id)?.colors || DEFAULT_COLORS;
-  const tint=color=>/^#[a-f0-9]{6}$/i.test(String(color))?color+'91':'#b3a29191';
+const paletteCache=new Map();
+const requestedPalettes=new Set();
+function paintCoverAura(id,requestPalette=true) {
+  if(!id)return;
+  if(id!==lastAuraId)lastAuraId=id;
+  const item=track(id);
+  const colors=paletteCache.get(String(id))||item?.colors||DEFAULT_COLORS;
+  const tint=(color,alpha)=>/^#[a-f0-9]{6}$/i.test(String(color))?color+alpha:'#b3a291'+alpha;
   const stack=$('#stack');
-  stack.style.setProperty('--aura-a',tint(colors[0]));
-  stack.style.setProperty('--aura-b',tint(colors[1]));
+  const a=tint(colors[0],'ae'),b=tint(colors[1],'a8');
+  if(stack.style.getPropertyValue('--aura-a')!==a)stack.style.setProperty('--aura-a',a);
+  if(stack.style.getPropertyValue('--aura-b')!==b)stack.style.setProperty('--aura-b',b);
+  // An Android worker samples a tiny thumbnail once for each album cover. No
+  // on-frame canvas reads, no FFT, and no CSS filter on the artwork itself.
+  if(requestPalette && native?.requestCoverPalette && item?.coverUri &&
+     (!lowPowerDevice || String(id)===String(current)) && !requestedPalettes.has(String(id))){
+    if(requestedPalettes.size>120)requestedPalettes.clear();
+    requestedPalettes.add(String(id));
+    native.requestCoverPalette(String(id),String(item.coverUri));
+  }
 }
-const DECK_STEP_RATIO=.78;
-const DECK_MAX_ADVANCE=1;
-function deckSwipeStep(){return Math.max(205,$('#stack').clientHeight*DECK_STEP_RATIO);}
+window.nativeCoverPalette=(id,a,b)=>{
+  if(!/^#[0-9a-f]{6}$/i.test(String(a))||!/^#[0-9a-f]{6}$/i.test(String(b)))return;
+  paletteCache.set(String(id),[a,b]);
+  // Repaint only the selected artwork's aura. Late responses from another
+  // track must never flash the whole screen in the wrong album colour.
+  if(String(id)===lastAuraId)paintCoverAura(id,false);
+};
+const DECK_DOWN_STEP_RATIO=.52;
+const DECK_UP_IMPACT=1.55;
+const MAX_DOWN_ADVANCE=4;
+const MAX_UP_ADVANCE=9;
+let deckMotionFrame=0;
+function deckSwipeStep(){return Math.max(120,$('#stack').clientHeight*DECK_DOWN_STEP_RATIO);}
 function clampDeckDepth(depth){return Math.max(0,Math.min(order.length-1,depth));}
-function depthFromGesture(gesture){
-  // A single vertical gesture moves at most one cover; no velocity acceleration.
-  const delta=Math.max(-DECK_MAX_ADVANCE,Math.min(DECK_MAX_ADVANCE,gesture.dy/deckSwipeStep()));
-  return clampDeckDepth(gesture.startDepth+delta);
+function depthFromGesture(g){
+  const ratio=g.dy/deckSwipeStep();
+  const multiplied=ratio<0?ratio*DECK_UP_IMPACT:ratio;
+  return clampDeckDepth(g.startDepth+Math.max(-MAX_UP_ADVANCE,Math.min(MAX_DOWN_ADVANCE,multiplied)));
 }
-
+function projectedDeckDepth(g){
+  const projected=depthFromGesture(g);
+  const velocity=Number.isFinite(g.velocity)?g.velocity:0; // pixels/ms
+  const impulse=(velocity*245/deckSwipeStep())*(velocity<0?DECK_UP_IMPACT*1.15:1);
+  const advance=Math.max(-MAX_UP_ADVANCE,Math.min(MAX_DOWN_ADVANCE,projected-g.startDepth+impulse));
+  return clampDeckDepth(Math.round(g.startDepth+advance));
+}
+function stopDeckMotion(){
+  if(deckMotionFrame){cancelAnimationFrame(deckMotionFrame);deckMotionFrame=0;}
+  deckTransitioning=false;
+}
+function animateDeckTo(target){
+  if(!deckMode)return;
+  stopDeckMotion();
+  target=clampDeckDepth(Math.round(target));
+  deckDepth=target;
+  const start=deckPaintDepth;
+  const distance=Math.abs(target-start);
+  if(distance<.02 || lowPowerDevice && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){
+    paintDeck(target,false);return;
+  }
+  deckTransitioning=true;
+  const duration=Math.min(840,350+140*Math.sqrt(distance));
+  const begin=performance.now();
+  const ease=t=>1-Math.pow(1-t,3); // momentum with gradually diminishing speed
+  function step(now){
+    if(!deckMode){stopDeckMotion();return;}
+    const t=Math.max(0,Math.min(1,(now-begin)/duration));
+    paintDeck(start+(target-start)*ease(t),true);
+    if(t<1){deckMotionFrame=requestAnimationFrame(step);return;}
+    deckMotionFrame=0;deckTransitioning=false;
+    paintDeck(target,false);
+    paintCoverAura(deckIdAt(target));
+  }
+  deckMotionFrame=requestAnimationFrame(step);
+}
+// Keep the previous album visibly present while a new album's layers arrive.
+// This is a short-lived DOM snapshot, never another permanent pile of images.
+function crossfadeAlbumScene(){
+  const stack=$('#stack');
+  if(!stack.children.length)return;
+  const previous=stack.cloneNode(true);
+  previous.removeAttribute('id');
+  previous.classList.add('stack-scene-old');
+  previous.setAttribute('aria-hidden','true');
+  previous.style.pointerEvents='none';
+  stack.parentElement.appendChild(previous);
+  // At most one snapshot, even on repeated quick switches.
+  stack.parentElement.querySelectorAll('.stack-scene-old').forEach(node=>{
+    if(node!==previous)node.remove();
+  });
+  const motion=previous.animate?.([
+    {opacity:1,transform:'translate3d(0,0,0) scale(1)'},
+    {opacity:0,transform:'translate3d(2%,0,0) scale(.985)'}
+  ],{duration:390,easing:'cubic-bezier(.2,.7,.25,1)',fill:'forwards'});
+  if(motion)motion.onfinish=()=>previous.remove();
+  else setTimeout(()=>previous.remove(),400);
+}
 function deckIdAt(offset){
   const p=index();
   return p<0||offset<0||offset>=order.length?null:order[(p+offset)%order.length];
 }
 function leaveDeckMode(){
   if(deckHorizontalTimer){clearTimeout(deckHorizontalTimer);deckHorizontalTimer=0;}
-  deckTransitioning=false;
+  stopDeckMotion();
   deckMode=false;
   deckDepth=0;deckPaintDepth=0;
   deckCards.clear();
@@ -288,11 +366,13 @@ function paintDeck(depth,isDragging){
     card.style.pointerEvents=(relative>=-.1 && relative<=2.7)?'auto':'none';
   }
   paintDeckTitle(depth);
-  paintCoverAura(deckIdAt(Math.round(depth)));
+  // Palette changes only when the finger has stopped, not on every frame.
+  if(!isDragging)paintCoverAura(deckIdAt(Math.round(depth)));
 }
 function focusDeckOffset(){return Math.max(0,Math.min(order.length-1,Math.round(deckDepth)));}
 function selectDeckCover(offset){
-  if(!deckMode || deckTransitioning || !Number.isInteger(offset))return;
+  if(!deckMode || !Number.isInteger(offset))return;
+  stopDeckMotion();
   const id=deckIdAt(offset);
   if(!id)return;
   if(id===String(current)){
@@ -303,10 +383,8 @@ function selectDeckCover(offset){
   choose(id,offset>0?1:-1);
 }
 function settleDeckDepth(depth){
-  deckDepth=clampDeckDepth(Math.round(depth));
-  // Stay in the browsing mode, even at depth zero. Horizontal swipes are only
-  // re-enabled when a cover is explicitly tapped to select/play it.
-  paintDeck(deckDepth,false);
+  // The deck stays on the selected song. A vertical gesture never starts audio.
+  animateDeckTo(depth);
 }
 function onDeckPlaybackAdvance(oldIndex,newIndex){
   if(!deckMode)return false;
@@ -314,6 +392,7 @@ function onDeckPlaybackAdvance(oldIndex,newIndex){
   if(!advanced){leaveDeckMode();stackMarkup();return true;}
   // Keep the browsed visual focus in place while the background music advances.
   const depth=Math.max(0,deckDepth-1);
+  stopDeckMotion();
   deckDepth=depth;
   paintDeck(depth,false);
   updatePlayerChrome();
@@ -412,6 +491,10 @@ function choose(id, direction = 1, fromNative = false) {
   const old = String(current);
   const changed = id !== old;
   if (changed) {
+    const oldTrack=track(old), newTrack=track(id);
+    const oldAlbum=oldTrack?.albumId || oldTrack?.album || oldTrack?.coverUri || '';
+    const newAlbum=newTrack?.albumId || newTrack?.album || newTrack?.coverUri || '';
+    if(deckMode || (oldAlbum!==newAlbum && oldAlbum && newAlbum))crossfadeAlbumScene();
     if (!fromNative && direction > 0) history.push(old);
     current = id;
     currentPosition = 0;
@@ -580,13 +663,18 @@ function commitUpcomingOrder(future,options={}) {
   // The visible list already has the correct DOM order after a drag.
   // Rebuilding it here would cause a freeze and can destroy pointer capture.
   if(options.preserveQueueDOM){
-    requestAnimationFrame(refreshStackForQueue);
+    // This artwork is behind the sheet. Defer its DOM rebuild until the row
+    // has visibly landed; audio order is updated with a single native move.
+    setTimeout(refreshStackForQueue,90);
     $('#queueCount').textContent='В очереди: '+future.length;
   }else{
     refreshStackForQueue();
     renderQueue();
   }
-  syncQueueToNative();
+  if(options.movedId && native?.moveQueueItem && nativeQueueReady){
+    const beforeId=String(options.beforeId || current);
+    setTimeout(()=>native.moveQueueItem(String(options.movedId),beforeId),30);
+  }else syncQueueToNative();
   // Intentionally no toast: the queue itself confirms the change.
   return true;
 }
@@ -717,14 +805,13 @@ function finishQueueDrag(cancelled=false){
   const visibleSet=new Set(visibleIds);
   const remaining=expected.filter(id=>!visibleSet.has(id));
   // Commit the audio queue without replacing the dragged DOM on pointerup.
-  commitUpcomingOrder([...visibleIds,...remaining],{preserveQueueDOM:true});
-  const landing=d.row.getBoundingClientRect();
-  // Move the ghost to the final row, then reveal it. No spinner/toast.
-  d.row.classList.add('drag-settling');
-  d.ghost.classList.add('settling');
-  d.ghost.style.transform=`translate3d(0,${landing.top-parseFloat(d.ghost.style.top)}px,0) scale(1)`;
-  d.ghost.style.opacity='0.25';
-  setTimeout(()=>{d.ghost.remove();d.row.classList.remove('drag-settling');},155);
+  // The placeholder has already moved under the finger. Reveal it now,
+  // before *any* costly Android queue command or artwork update.
+  const nextOrder=[...visibleIds,...remaining];
+  const movedIndex=nextOrder.indexOf(String(d.id));
+  const nextId=nextOrder[movedIndex+1] || String(current);
+  d.ghost.remove();
+  commitUpcomingOrder(nextOrder,{preserveQueueDOM:true,movedId:d.id,beforeId:nextId});
 }
 queueList.addEventListener('pointerup',e=>{
   if(dragQueue?.pointer===e.pointerId)finishQueueDrag(false);
@@ -805,8 +892,8 @@ $('#shuffle').onclick = () => {
   toast(shuffle ? 'Перемешивание при ручном переключении' : 'Обычный порядок');
 };
 $('#device').onclick = () => toast('Воспроизведение на этом устройстве');
-// The queue behaves as a two-stage bottom sheet. Only the grab area captures
-// vertical sheet gestures; scrolling/reordering the songs remains independent.
+// Interactive two-stage sheet: the top edge moves WITH the finger, not after
+// pointerup. Only the grab/header/now-playing zones own this gesture.
 let sheetStage = 'closed';
 let sheetSwipe = null;
 function setQueueSheet(stage){
@@ -825,53 +912,111 @@ function setQueueSheet(stage){
   if(stage==='closed')delete overlay.dataset.rendered;
 }
 $('#queueOpen').onclick=()=>setQueueSheet('partial');
-$('#overlay').addEventListener('click', e=>{
+$('#overlay').addEventListener('click',e=>{
   if(e.target===$('#overlay'))setQueueSheet('closed');
 });
 const queueGrab=$('#queueGrab');
+const queueSheet=$('#queueSheet');
+function maxSheetHeight(){return Math.max(220,$('#screen').clientHeight-10);}
+function partialSheetHeight(){return Math.max(220,$('#screen').clientHeight*.73);}
 function startSheetSwipe(e){
-  if(e.isPrimary===false || dragQueue || sheetSwipe)return;
-  sheetSwipe={pointer:e.pointerId,startY:e.clientY,lastY:e.clientY};
-  queueGrab.setPointerCapture(e.pointerId);
+  if(e.isPrimary===false || dragQueue || sheetSwipe || sheetStage==='closed')return;
+  sheetSwipe={pointer:e.pointerId,startY:e.clientY,lastY:e.clientY,
+    lastTime:performance.now(),velocity:0,dy:0,stage:sheetStage,
+    height:queueSheet.getBoundingClientRect().height};
+  queueSheet.setPointerCapture?.(e.pointerId);
+  queueSheet.classList.add('sheet-following');
+  e.preventDefault();
 }
-[queueGrab,$('#queueSheet').querySelector('.sheet-header'),$('#queueNow')]
+[queueGrab,queueSheet.querySelector('.sheet-header'),$('#queueNow')]
   .filter(Boolean).forEach(el=>el.addEventListener('pointerdown',startSheetSwipe));
-queueGrab.addEventListener('pointermove',e=>{
-  if(sheetSwipe?.pointer!==e.pointerId)return;
-  sheetSwipe.lastY=e.clientY;
-});
+function updateSheetSwipe(e){
+  const g=sheetSwipe;
+  if(!g || e.pointerId!==g.pointer)return;
+  const now=performance.now();
+  const dt=Math.max(1,now-g.lastTime);
+  const speed=(e.clientY-g.lastY)/dt;
+  g.velocity=.6*g.velocity+.4*speed;
+  g.lastY=e.clientY;g.lastTime=now;
+  g.dy=e.clientY-g.startY;
+  if(g.stage==='partial'){
+    if(g.dy<0){
+      queueSheet.style.transform='translateY(0)';
+      queueSheet.style.height=Math.min(maxSheetHeight(),g.height-g.dy)+'px';
+    }else{
+      queueSheet.style.height=g.height+'px';
+      queueSheet.style.transform=`translate3d(0,${Math.min(g.dy,Math.max(0,g.height-60))}px,0)`;
+    }
+  }else{
+    // Full-screen pull-down changes the top edge continuously, keeping the
+    // bottom edge anchored. No oversized layout work on the queue rows.
+    queueSheet.style.transform='translateY(0)';
+    queueSheet.style.height=Math.max(180,Math.min(maxSheetHeight(),g.height-Math.max(0,g.dy)))+'px';
+  }
+  e.preventDefault();
+}
 function finishSheetSwipe(e,cancelled=false){
   const g=sheetSwipe;
   if(!g||g.pointer!==e.pointerId)return;
   sheetSwipe=null;
-  if(cancelled)return;
-  const dy=e.clientY-g.startY;
-  if(dy< -48)setQueueSheet('full');
-  else if(dy>48){
-    if(sheetStage==='full' && dy<160)setQueueSheet('partial');
-    else setQueueSheet('closed');
+  try{if(queueSheet.hasPointerCapture?.(e.pointerId))queueSheet.releasePointerCapture(e.pointerId);}catch(_){}
+  const dy= cancelled ? 0 : e.clientY-g.startY;
+  const v=g.velocity;
+  let destination=g.stage;
+  if(g.stage==='partial'){
+    if(dy< -Math.min(75,$('#screen').clientHeight*.1)||v<-.6)destination='full';
+    else if(dy>Math.min(105,$('#screen').clientHeight*.17)||v>.85)destination='closed';
+  }else if(g.stage==='full' && (dy>65 || v>.7)){
+    destination=(dy>$('#screen').clientHeight*.48 || v>2.2)?'closed':'partial';
   }
+  // Transition out of the exact finger position. The first computed layout
+  // is committed with transitions disabled, then CSS eases to destination.
+  queueSheet.getBoundingClientRect();
+  queueSheet.classList.remove('sheet-following');
+  setQueueSheet(destination);
+  queueSheet.style.height='';
+  queueSheet.style.transform='';
 }
-queueGrab.addEventListener('pointerup',e=>finishSheetSwipe(e));
-queueGrab.addEventListener('pointercancel',e=>finishSheetSwipe(e,true));
-queueGrab.addEventListener('lostpointercapture',e=>finishSheetSwipe(e,true));
-// Downward pull within the track list closes the sheet only at scrollTop=0.
-// Otherwise the gesture stays a normal list scroll.
+queueSheet.addEventListener('pointermove',updateSheetSwipe);
+queueSheet.addEventListener('pointerup',e=>finishSheetSwipe(e));
+queueSheet.addEventListener('pointercancel',e=>finishSheetSwipe(e,true));
+queueSheet.addEventListener('lostpointercapture',e=>finishSheetSwipe(e,true));
+window.addEventListener('blur',()=>{if(sheetSwipe)finishSheetSwipe({pointerId:sheetSwipe.pointer,clientY:sheetSwipe.startY},true);});
+
+// A downward pull on the track list at scrollTop=0 transfers to the SAME
+// live sheet recogniser. Upward gestures remain ordinary list scrolling.
 let listSwipe=null;
 queueList.addEventListener('touchstart',e=>{
   if(dragQueue||sheetStage==='closed'||queueList.scrollTop>1||e.touches.length!==1||
      e.target.closest?.('.handle')){listSwipe=null;return;}
-  listSwipe={y:e.touches[0].clientY};
+  listSwipe={y:e.touches[0].clientY,active:false};
 },{passive:true});
-queueList.addEventListener('touchend',e=>{
-  if(!listSwipe||dragQueue){listSwipe=null;return;}
-  const dy=e.changedTouches[0].clientY-listSwipe.y;
-  listSwipe=null;
-  if(dy>110&&queueList.scrollTop<=1){
-    setQueueSheet(sheetStage==='full'?'partial':'closed');
+queueList.addEventListener('touchmove',e=>{
+  const l=listSwipe;
+  if(!l||dragQueue||e.touches.length!==1)return;
+  const y=e.touches[0].clientY;
+  if(!l.active && y-l.y>12 && queueList.scrollTop<=1 && !sheetSwipe){
+    l.active=true;
+    sheetSwipe={pointer:'list-touch',startY:l.y,lastY:y,lastTime:performance.now(),
+      velocity:0,dy:0,stage:sheetStage,height:queueSheet.getBoundingClientRect().height};
+    queueSheet.classList.add('sheet-following');
   }
+  if(l.active){
+    e.preventDefault();
+    updateSheetSwipe({pointerId:'list-touch',clientY:y,preventDefault(){}});
+  }
+},{passive:false});
+queueList.addEventListener('touchend',e=>{
+  if(!listSwipe)return;
+  if(listSwipe.active){
+    finishSheetSwipe({pointerId:'list-touch',clientY:e.changedTouches[0].clientY});
+  }
+  listSwipe=null;
 },{passive:true});
-queueList.addEventListener('touchcancel',()=>{listSwipe=null;},{passive:true});
+queueList.addEventListener('touchcancel',()=>{
+  if(listSwipe?.active)finishSheetSwipe({pointerId:'list-touch',clientY:listSwipe.y},true);
+  listSwipe=null;
+},{passive:true});
 
 
 const stack = $('#stack');
@@ -927,9 +1072,11 @@ function deckDragStep(g){
   paintDeck(g.depthValue,true);
 }
 stack.addEventListener('pointerdown',e=>{
-  if(e.isPrimary===false || stackAnimating || deckTransitioning)return;
+  if(e.isPrimary===false || stackAnimating)return;
+  if(deckMode && deckTransitioning)stopDeckMotion();
   swipe={pointer:e.pointerId,x:e.clientX,y:e.clientY,dx:0,dy:0,axis:null,
-    startDepth:deckDepth,depthValue:deckDepth,painted:false,
+    lastY:e.clientY,lastTime:performance.now(),velocity:0,
+    startDepth:deckMode?deckPaintDepth:0,depthValue:deckPaintDepth,painted:false,
     tapOffset:deckMode?Number(e.target.closest?.('.deck-card')?.dataset.offset):NaN};
   stack.setPointerCapture(e.pointerId);
 });
@@ -937,6 +1084,8 @@ stack.addEventListener('pointermove',e=>{
   const g=swipe;
   if(!g||g.pointer!==e.pointerId||stackAnimating)return;
   g.dx=e.clientX-g.x;g.dy=e.clientY-g.y;
+  const now=performance.now(),dt=Math.max(1,now-g.lastTime);
+  if(dt>6){g.velocity=.55*g.velocity+.45*((e.clientY-g.lastY)/dt);g.lastY=e.clientY;g.lastTime=now;}
   if(!g.axis){
     if(Math.max(Math.abs(g.dx),Math.abs(g.dy))<11)return;
     if(Math.abs(g.dy)>Math.abs(g.dx)*1.17){
@@ -964,7 +1113,7 @@ stack.addEventListener('pointerup',e=>{
   if(g.axis==='horizontal' && !deckMode)paintCoverGesture();
   swipe=null;
   if(g.axis==='vertical'){
-    settleDeckDepth(depthFromGesture(g));
+    settleDeckDepth(projectedDeckDepth(g));
     return;
   }
   if(g.axis==='horizontal'){
@@ -1021,6 +1170,9 @@ function nativePlaybackState(state) {
       const newIndex=order.indexOf(itemId);
       const direction=(newIndex===(oldIndex+1)%order.length)?1:
         (oldIndex===(newIndex+1)%order.length)?-1:0;
+      const oldAlbum=track(current)?.albumId || track(current)?.album || '';
+      const incomingAlbum=track(itemId)?.albumId || track(itemId)?.album || '';
+      if(!deckMode && oldAlbum && incomingAlbum && oldAlbum!==incomingAlbum)crossfadeAlbumScene();
       current = itemId;
       currentPosition = 0;
       playerState = null;

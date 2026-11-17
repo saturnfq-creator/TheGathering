@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.ContentUris
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -43,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private var destroyed = false
     private val pendingActions = ArrayDeque<(MediaController) -> Unit>()
     private var libraryScanRunning = false
+    private val coverPaletteCache = LinkedHashMap<String, Pair<String, String>>()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -321,6 +324,70 @@ class MainActivity : ComponentActivity() {
                     publishPlayerState()
                 }
             }
+        }
+
+        /** Move exactly one upcoming item instead of rebuilding a potentially
+         * thousands-entry playlist (and blocking the WebView release animation). */
+        @JavascriptInterface fun moveQueueItem(id: String, beforeId: String) {
+            withPlayer { player ->
+                if (!player.isCommandAvailable(Player.COMMAND_CHANGE_MEDIA_ITEMS)) return@withPlayer
+                val from = (0 until player.mediaItemCount).firstOrNull {
+                    player.getMediaItemAt(it).mediaId == id
+                } ?: return@withPlayer
+                val before = (0 until player.mediaItemCount).firstOrNull {
+                    player.getMediaItemAt(it).mediaId == beforeId
+                } ?: return@withPlayer
+                if (from == before) return@withPlayer
+                // Media3 removes the source first. Adjust the target index to
+                // preserve "insert immediately before" in the remaining list.
+                val target = if (from < before) before - 1 else before
+                if (from != target) player.moveMediaItem(from, target)
+            }
+        }
+
+        /** Decode only a tiny album-cover thumbnail on the existing IO worker.
+         * One request per distinct cover ID; no bitmap work on the UI thread. */
+        @JavascriptInterface fun requestCoverPalette(id: String, coverUri: String) {
+            if (destroyed || !coverUri.startsWith("content://media/")) return
+            try { io.execute {
+                val cached = synchronized(coverPaletteCache) { coverPaletteCache[coverUri] }
+                val pair = cached ?: try {
+                    val source = Uri.parse(coverUri)
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@execute
+                    var sample = 1
+                    while (bounds.outWidth / sample > 80 || bounds.outHeight / sample > 80) sample *= 2
+                    val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = android.graphics.Bitmap.Config.RGB_565 }
+                    val bitmap = contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, options) }
+                        ?: return@execute
+                    try {
+                        // Sample upper and lower halves: lively album gradients
+                        // remain recognisable while excluding tiny noisy details.
+                        fun average(topHalf: Boolean): String {
+                            var red=0L;var green=0L;var blue=0L;var count=0L
+                            val jump = (maxOf(bitmap.width, bitmap.height) / 24).coerceAtLeast(1)
+                            val fromY=if (topHalf) 0 else bitmap.height/2
+                            val endY=if (topHalf) (bitmap.height/2).coerceAtLeast(1) else bitmap.height
+                            for (y in fromY until endY step jump) for (x in 0 until bitmap.width step jump) {
+                                val pixel=bitmap.getPixel(x,y)
+                                val r=Color.red(pixel); val g=Color.green(pixel);val b=Color.blue(pixel)
+                                if (maxOf(r,g,b) < 22 || minOf(r,g,b) > 237) continue
+                                red+=r;green+=g;blue+=b;count++
+                            }
+                            if(count==0L)return "#b49b85"
+                            fun channel(v: Long)=((v/count)*1.18+14).toInt().coerceIn(0,255)
+                            return String.format(java.util.Locale.US,"#%02x%02x%02x",channel(red),channel(green),channel(blue))
+                        }
+                        Pair(average(true),average(false))
+                    } finally { bitmap.recycle() }
+                } catch (_: Exception) { return@execute }
+                synchronized(coverPaletteCache) {
+                    if(coverPaletteCache.size>=48)coverPaletteCache.remove(coverPaletteCache.keys.first())
+                    coverPaletteCache[coverUri]=pair
+                }
+                evaluate("window.nativeCoverPalette(${JSONObject.quote(id)},${JSONObject.quote(pair.first)},${JSONObject.quote(pair.second)})")
+            } } catch (_: java.util.concurrent.RejectedExecutionException) { /* destroyed */ }
         }
 
         @JavascriptInterface fun reorderQueue(idsJson: String) {
