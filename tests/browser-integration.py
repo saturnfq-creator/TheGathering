@@ -71,13 +71,13 @@ with sync_playwright() as p:
     page.locator('#queueOpen').click()
     page.wait_for_timeout(400)
     sheet=page.locator('#queueSheet')
-    height0=sheet.bounding_box()['height']
+    top0=sheet.bounding_box()['y']
     grab=page.locator('#queueGrab').bounding_box()
     gx=grab['x']+grab['width']/2;gy=grab['y']+grab['height']/2
     page.mouse.move(gx,gy);page.mouse.down();page.mouse.move(gx,gy-150,steps=12)
-    height_mid=sheet.bounding_box()['height']
-    print('sheet heights',height0,height_mid)
-    assert height_mid>height0+70,(height0,height_mid)
+    top_mid=sheet.bounding_box()['y']
+    print('sheet tops',top0,top_mid)
+    assert top_mid<top0-70,(top0,top_mid)
     page.mouse.up();page.wait_for_timeout(550)
     assert page.evaluate('sheetStage')=='full'
     # Move a row; on release its real row must be visible immediately and native

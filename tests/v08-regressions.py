@@ -27,7 +27,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(850)
     assert page.evaluate('deckMode'), 'expected browsing mode after downward swipe'
     assert page.evaluate('deckDepth')>0
-    assert page.evaluate("getComputedStyle(document.querySelector('#stack'),'::after').opacity")=='0'
+    assert page.evaluate("getComputedStyle(document.querySelector('#stack .cover-rim')).opacity")=='0'
     # Return to currently playing first cover, in one or more upward flicks.
     for _ in range(5):
         if not page.evaluate('deckMode'):break
@@ -35,7 +35,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(900)
     assert not page.evaluate('deckMode'), 'at depth 0 it must restore standard playing mode'
     assert page.locator('#stack .front').count()==1
-    assert page.evaluate("getComputedStyle(document.querySelector('#stack'),'::after').opacity")=='0.94'
+    assert page.evaluate("getComputedStyle(document.querySelector('#stack .front .cover-rim')).opacity")=='0.94'
     before=page.evaluate('current')
     drag(x,y,-170,0)
     assert page.evaluate('current')!=before, 'horizontal swipe should resume without tapping'

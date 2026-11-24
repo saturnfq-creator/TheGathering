@@ -8,7 +8,7 @@
         android:label="The Gathering"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:theme="@style/TheGatheringTheme"
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="unspecified">
             <intent-filter>

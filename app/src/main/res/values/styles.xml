@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <style name="TheGatheringTheme" parent="android:style/Theme.Material.NoActionBar">
+    <!-- Avoid a white native surface while the WebView compositor changes layers. -->
+    <item name="android:windowBackground">#191613</item>
+    <item name="android:colorBackground">#191613</item>
+    <item name="android:statusBarColor">#231C18</item>
+    <item name="android:navigationBarColor">#141211</item>
+    <item name="android:windowLightStatusBar">false</item>
+    <item name="android:windowLightNavigationBar">false</item>
+  </style>
+</resources>

@@ -7,7 +7,7 @@ const code = fs.readFileSync(__dirname+'/../app/src/main/assets/app.js','utf8');
 const fake = () => ({
   style:{setProperty(){},removeProperty(){},getPropertyValue(){return ""}}, dataset:{}, children:[], classList:{add(){},remove(){},toggle(){},contains(){return false}},
   textContent:'',innerHTML:'',value:'',clientHeight:300,clientWidth:300,attributes:{},
-  setAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
+  setAttribute(){},removeAttribute(){},addEventListener(){},setPointerCapture(){},pause(){},load(){},
   replaceChildren(...els){this.children=els},appendChild(el){this.children.push(el)},append(){},remove(){},
   querySelector(){return null},querySelectorAll(){return []},
   getBoundingClientRect(){return {left:0,top:0,width:100,height:50}},
@@ -135,4 +135,24 @@ assert(code.includes('window.nativeCoverPalette='));
 assert(java.includes('fun moveQueueItem('));
 assert(java.includes('fun requestCoverPalette('));
 assert(html.includes('gatheringAuraBreath'));
-console.log('PASS v0.7: queue, time, kinetic depth, responsive sheet, targeted reorder, palette, native back');
+// v0.9: shuffle mutates the actual queue, the next track follows it, and
+// the native playlist gets that exact order (not a hidden random-next flag).
+expr('deckMode=false;tracks.forEach(t=>{t.album="Same";t.albumId="same";});order=["a","b","c","d"];current="a";nativeQueueReady=true;history=["b"];');
+calls.length=0;
+assert.equal(expr('shuffleUpcoming()'),true);
+assert.equal(expr('current'),'a');
+assert.equal(expr('history.length'),0);
+const shuffled=expr('order.slice()');
+assert.equal(shuffled[0],'a');
+assert.equal(JSON.stringify([...shuffled].sort()),JSON.stringify(['a','b','c','d']));
+assert.notEqual(JSON.stringify(shuffled),JSON.stringify(['a','b','c','d']));
+assert.deepEqual(calls.at(-1),['reorderQueue',JSON.stringify(shuffled)]);
+const expectedNext=shuffled[1];
+expr('next()');
+assert.equal(expr('current'),expectedNext);
+assert.deepEqual(calls.at(-1),['selectTrack',expectedNext]);
+assert(!html.includes('id="shuffle"'));
+assert(html.includes('id="shuffleQueue"'));
+assert(html.includes('class="cover-rim"')||code.includes('class="cover-rim"'));
+assert(code.includes('const amplitude=Math.max(.65,Math.min(2,h*.035));'));
+console.log('PASS v0.9: real shuffled Media3 order, next coherence, travelling rim, calmer timeline');

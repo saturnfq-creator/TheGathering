@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.8: return to playing-cover mode, palette light, in-library playback.
+// The Gathering 0.9: travelling cover rim, compositor-friendly queue, real shuffle order.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -31,7 +31,6 @@ let playerState = null;
 let lastNativeState = null;
 let currentPosition = 0;
 let history = [];
-let shuffle = false;
 let libraryMode = 'albums';
 let searchTerm = '';
 let stackAnimating = false;
@@ -135,11 +134,17 @@ window.addEventListener('resize',()=>{
   if(titleMeasureFrame)cancelAnimationFrame(titleMeasureFrame);
   titleMeasureFrame=requestAnimationFrame(updateTitleOverflow);
 });
+// The rim belongs to each physical cover, not to the stationary stack.
+// Image clipping is inside the artwork child so that the outside halo can
+// move with a transformed card instead of being cut at its edges.
+function fillStackCard(card,item,eager=false){
+  card.innerHTML='<div class="cover-image">'+art(item,eager)+'</div><div class="cover-rim" aria-hidden="true"></div>';
+}
 function makeStackCard(id,role) {
   const card=document.createElement('div');
   card.className='album '+role;
   const item=track(id);
-  if(item){card.dataset.id=String(item.id);card.innerHTML=art(item,role!=='back2');}
+  if(item){card.dataset.id=String(item.id);fillStackCard(card,item,role!=='back2');}
   return card;
 }
 // A virtualised depth deck: only the focus and a few neighbouring covers exist
@@ -389,7 +394,7 @@ function paintDeck(depth,isDragging){
       fragment.append(card);
     }else if(card.dataset.id!==String(id)){
       card.dataset.id=String(id);
-      card.innerHTML=art(track(id),offset<=depth+1);
+      fillStackCard(card,track(id),offset<=depth+1);
     }
   }
   stack.append(fragment);
@@ -463,6 +468,7 @@ function stackMarkup() {
     front:makeStackCard(current,'front'),
     prev:makeStackCard(at(-1),'prev-card')
   };
+  $('#stack').classList.remove('gesture-active');
   $('#stack').replaceChildren(cards.back2,cards.back1,cards.front,cards.prev);
   stackCards=cards;
   paintCoverAura(current);
@@ -472,13 +478,14 @@ function setCardRole(card,role,recycle=false) {
   card.className='album '+role+(recycle?' recycle':'');
   card.style.transform='';
   card.style.opacity='';
+  card.querySelector('.cover-rim')?.style.removeProperty('opacity');
 }
 function recycleCard(card,id,role) {
   const t=track(id);
   setCardRole(card,role,true);
   if(t && card.dataset.id!==String(t.id)) {
     card.dataset.id=String(t.id);
-    card.innerHTML=art(t,role==='prev-card');
+    fillStackCard(card,t,role==='prev-card');
   }
   requestAnimationFrame(()=>{
     if(card.isConnected)card.classList.remove('recycle');
@@ -494,6 +501,7 @@ function updateStack(direction=0) {
   if(!match){stackMarkup();return;}
   stackAnimating=true;
   if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
+  $('#stack').classList.remove('gesture-active');
   const pos=index(),n=order.length;
   const at=offset=>order[(pos+offset+n)%n];
   if(direction>0){
@@ -586,13 +594,9 @@ function choose(id, direction = 1, fromNative = false) {
 }
 function next() {
   if(stackAnimating){queuedNavigation=1;return;}
-  if (order.length < 2) return;
-  let id;
-  if (shuffle) {
-    const rest = order.filter(x => x !== current);
-    id = rest[Math.floor(Math.random()*rest.length)];
-  } else id = order[(index()+1)%order.length];
-  choose(id,1);
+  if(order.length<2)return;
+  // The displayed queue is authoritative, including after Shuffle Queue.
+  choose(order[(index()+1)%order.length],1);
 }
 function prev() {
   if(stackAnimating){queuedNavigation=-1;return;}
@@ -644,6 +648,8 @@ function renderQueue() {
   }
   list.appendChild(fragment);
   $('#queueCount').textContent = 'В очереди: ' + upcoming.length;
+  const shuffleButton=$('#shuffleQueue');
+  if(shuffleButton)shuffleButton.disabled=upcoming.length<2;
 }
 function refreshStackForQueue() {
   if(deckMode){paintDeck(deckDepth,false);return;}
@@ -937,11 +943,28 @@ $('#play').onclick = () => {
   } else toast('Открой «Библиотека» и выбери песню');
   updatePlay();
 };
-$('#shuffle').onclick = () => {
-  shuffle = !shuffle;
-  $('#shuffle').classList.toggle('shuffle-on',shuffle);
-  toast(shuffle ? 'Перемешивание при ручном переключении' : 'Обычный порядок');
-};
+// Shuffle the ACTUAL upcoming playlist, rather than randomising only the
+// JavaScript manual Next button. Media3 then auto-advances in this same order.
+function shuffleUpcoming(){
+  const future=upcomingIds();
+  if(future.length<2)return false;
+  const mixed=future.slice();
+  for(let i=mixed.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [mixed[i],mixed[j]]=[mixed[j],mixed[i]];
+  }
+  if(mixed.every((id,i)=>id===future[i]))mixed.push(mixed.shift());
+  order=[String(current),...mixed];
+  history.length=0; // the prior linear back-stack no longer matches this queue
+  syncQueueToNative();
+  refreshStackForQueue();
+  renderQueue();
+  const btn=$('#shuffleQueue');
+  btn?.classList.remove('shuffle-pulse');
+  if(btn){void btn.offsetWidth;btn.classList.add('shuffle-pulse');}
+  return true;
+}
+$('#shuffleQueue').onclick=shuffleUpcoming;
 $('#device').onclick = () => toast('Воспроизведение на этом устройстве');
 // Interactive two-stage sheet: the top edge moves WITH the finger, not after
 // pointerup. Only the grab/header/now-playing zones own this gesture.
@@ -970,11 +993,18 @@ const queueGrab=$('#queueGrab');
 const queueSheet=$('#queueSheet');
 function maxSheetHeight(){return Math.max(220,$('#screen').clientHeight-10);}
 function partialSheetHeight(){return Math.max(220,$('#screen').clientHeight*.73);}
+function sheetCurrentOffset(){
+  const rect=queueSheet.getBoundingClientRect();
+  const screenRect=$('#screen').getBoundingClientRect();
+  return Math.max(0,rect.top-screenRect.top-10);
+}
 function startSheetSwipe(e){
+  // Controls in the header are real buttons, not drag handles.
+  if(e.target.closest?.('button, input, a, [role=button]'))return;
   if(e.isPrimary===false || dragQueue || sheetSwipe || sheetStage==='closed')return;
   sheetSwipe={pointer:e.pointerId,startY:e.clientY,lastY:e.clientY,
     lastTime:performance.now(),velocity:0,dy:0,stage:sheetStage,
-    height:queueSheet.getBoundingClientRect().height};
+    initialOffset:sheetCurrentOffset()};
   queueSheet.setPointerCapture?.(e.pointerId);
   queueSheet.classList.add('sheet-following');
   e.preventDefault();
@@ -990,20 +1020,11 @@ function updateSheetSwipe(e){
   g.velocity=.6*g.velocity+.4*speed;
   g.lastY=e.clientY;g.lastTime=now;
   g.dy=e.clientY-g.startY;
-  if(g.stage==='partial'){
-    if(g.dy<0){
-      queueSheet.style.transform='translateY(0)';
-      queueSheet.style.height=Math.min(maxSheetHeight(),g.height-g.dy)+'px';
-    }else{
-      queueSheet.style.height=g.height+'px';
-      queueSheet.style.transform=`translate3d(0,${Math.min(g.dy,Math.max(0,g.height-60))}px,0)`;
-    }
-  }else{
-    // Full-screen pull-down changes the top edge continuously, keeping the
-    // bottom edge anchored. No oversized layout work on the queue rows.
-    queueSheet.style.transform='translateY(0)';
-    queueSheet.style.height=Math.max(180,Math.min(maxSheetHeight(),g.height-Math.max(0,g.dy)))+'px';
-  }
+  // The full-size sheet moves as ONE GPU layer: changing height here forced
+  // WebView to reflow/repaint album art and occasionally flash a white frame.
+  const maxOffset=maxSheetHeight()-52;
+  const offset=Math.max(0,Math.min(maxOffset,g.initialOffset+g.dy));
+  queueSheet.style.transform=`translate3d(0,${offset}px,0)`;
   e.preventDefault();
 }
 function finishSheetSwipe(e,cancelled=false){
@@ -1020,12 +1041,10 @@ function finishSheetSwipe(e,cancelled=false){
   }else if(g.stage==='full' && (dy>65 || v>.7)){
     destination=(dy>$('#screen').clientHeight*.48 || v>2.2)?'closed':'partial';
   }
-  // Transition out of the exact finger position. The first computed layout
-  // is committed with transitions disabled, then CSS eases to destination.
+  // CSS now animates ONLY compositor transform, never the layout height.
   queueSheet.getBoundingClientRect();
   queueSheet.classList.remove('sheet-following');
   setQueueSheet(destination);
-  queueSheet.style.height='';
   queueSheet.style.transform='';
 }
 queueSheet.addEventListener('pointermove',updateSheetSwipe);
@@ -1049,7 +1068,8 @@ queueList.addEventListener('touchmove',e=>{
   if(!l.active && y-l.y>12 && queueList.scrollTop<=1 && !sheetSwipe){
     l.active=true;
     sheetSwipe={pointer:'list-touch',startY:l.y,lastY:y,lastTime:performance.now(),
-      velocity:0,dy:0,stage:sheetStage,height:queueSheet.getBoundingClientRect().height};
+      velocity:0,dy:0,stage:sheetStage,
+      initialOffset:sheetCurrentOffset()};
     queueSheet.classList.add('sheet-following');
   }
   if(l.active){
@@ -1082,7 +1102,11 @@ function paintCoverGesture(){
   const progress=Math.min(1,Math.abs(dx)/width);
   const front=stackCards.front,back1=stackCards.back1,back2=stackCards.back2,prevCard=stackCards.prev;
   g.painted=true;
+  stack.classList.add('gesture-active');
   const panels=[front,back1,back2,prevCard];
+  // Fade the travelling highlight in the same coordinate system as the art.
+  const rim=front.querySelector('.cover-rim');
+  if(rim)rim.style.opacity=String(Math.max(0,1-progress));
   for(const panel of panels)panel.classList.add('gesture');
   if(dx<0){
     // Next: finger pulls current artwork left; the next artwork emerges beneath it.
@@ -1106,6 +1130,7 @@ function paintCoverGesture(){
 }
 function resetCoverGesture(){
   if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
+  stack.classList.remove('gesture-active');
   if(!stackCards)return;
   const panels=Object.values(stackCards);
   // Commit the dragged transforms before handing motion back to CSS transitions.
@@ -1114,6 +1139,7 @@ function resetCoverGesture(){
     card.classList.remove('gesture');
     card.style.transform='';
     card.style.opacity='';
+    card.querySelector('.cover-rim')?.style.removeProperty('opacity');
   });
 }
 // A single pointer recogniser owns the cover. Lock an axis only after a small
@@ -1163,6 +1189,8 @@ stack.addEventListener('pointerup',e=>{
   if(swipeFrame){cancelAnimationFrame(swipeFrame);swipeFrame=0;}
   if(g.axis==='horizontal' && !deckMode)paintCoverGesture();
   swipe=null;
+  // Re-enable rim opacity easing before the gesture commits a new playing cover.
+  stack.classList.remove('gesture-active');
   if(g.axis==='vertical'){
     settleDeckDepth(projectedDeckDepth(g));
     return;
@@ -1563,16 +1591,16 @@ function frame(now) {
   }
   c.fillStyle=cachedWaveFill;
   c.beginPath();c.moveTo(0,0);
-  const amplitude=Math.max(2,h*.14);
+  const amplitude=Math.max(.65,Math.min(2,h*.035));
   for(let y=0;y<=h;y+=Math.max(2,Math.round(h/18))){
-    c.lineTo(filled+Math.sin(y*.115+now*.00125)*amplitude,y);
+    c.lineTo(filled+Math.sin(y*.085+now*.0006)*amplitude,y);
   }
   c.lineTo(filled,h);c.lineTo(0,h);c.closePath();c.fill();
   // Stroke the curved boundary itself, never a rectangular gradient strip.
   if(filled>1 && filled<w-1){
     c.save();c.beginPath();
     for(let y=0;y<=h;y+=2){
-      const x=filled+Math.sin(y*.115+now*.00125)*amplitude;
+      const x=filled+Math.sin(y*.085+now*.0006)*amplitude;
       if(y===0)c.moveTo(x,y);else c.lineTo(x,y);
     }
     c.lineWidth=1.6;
