@@ -267,8 +267,41 @@ html.lite-motion .stack::before{opacity:.58;animation:none!important;}
 .sheet-grab-area,.sheet-header,.queue-now{touch-action:none;}
 /* Visually land a dragged queue row immediately; native reorder is async. */
 .queue-item.drag-settling{opacity:1!important;}
+/* v0.8: colour-responsive ambient light, selected artwork and library now playing */
+.ambient-layer{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;
+  background:radial-gradient(ellipse 80% 33% at 50% 26%,var(--ambient-one,#d4a27dcc),transparent 78%),
+             radial-gradient(ellipse 82% 42% at 34% 53%,var(--ambient-two,#8e758cbb),transparent 82%);
+  transition:opacity 850ms ease;contain:paint;}
+.ambient-layer.visible{opacity:.68;}
+html.lite-motion .ambient-layer.visible{opacity:.42;}
+/* This rim lives on the persistent stack element: its fade survives cover swaps. */
+.stack::after{content:"";position:absolute;inset:-2px;z-index:7;border-radius:16.5%;
+  border:1.5px solid #fff3d2db;
+  box-shadow:0 0 9px #fff1d69e,0 0 24px var(--aura-a,#bda18f99),
+             inset 0 0 5px #fff7df80,0 0 40px var(--aura-b,#bda18f77);
+  opacity:.94;pointer-events:none;transition:opacity 380ms ease;}
+.stack.deck-mode::after,.stack.depth-drag::after{opacity:0;}
+html.lite-motion .stack::after{box-shadow:0 0 7px var(--aura-a,#bda18f99),inset 0 0 3px #fff7df60;}
+.eyebrow{display:flex;align-items:center;gap:8px;}
+.brand-mark{width:22px;height:22px;object-fit:contain;opacity:.52;flex-shrink:0;}
+.library-head .brand-mark{width:25px;height:25px;opacity:.44;}
+.library-panel .library-row{padding:9px 8px;border-radius:14px;
+  transition:background 260ms ease,border-color 260ms ease,box-shadow 260ms ease;
+  border:1px solid transparent;border-bottom-color:#ffffff1c;}
+.library-panel .library-row.is-current{background:linear-gradient(110deg,#f3c99e28,#bc89741a 61%,#a2807220);
+  border-color:#e6bfa16d;box-shadow:inset 0 1px #fff4e422,0 0 18px #dba77c29;}
+.library-row.is-current .lib-track-info strong{color:#ffe8cf;}
+.lib-playing-marker{font-size:13px;color:#ffe0b1;text-shadow:0 0 10px #e9ac70;
+  opacity:0;transform:scale(.8);transition:opacity 240ms,transform 240ms;pointer-events:none;}
+.library-row.is-current .lib-playing-marker{opacity:1;transform:scale(1);}
+.library-panel .album-tile.is-current-album .album-tile-art{outline:1.5px solid #e2b68bbb;
+  outline-offset:2px;box-shadow:0 0 18px #e0a67e48;}
+.library-panel .album-tile.is-current-album>strong{color:#ffdfc3;}
+@media(prefers-reduced-motion:reduce){.ambient-layer{transition-duration:80ms!important;}}
 </style></head><body><main class="screen" id="screen">
-<header class="header"><div class="eyebrow">СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
+<div class="ambient-layer visible" id="ambientA" aria-hidden="true"></div>
+<div class="ambient-layer" id="ambientB" aria-hidden="true"></div>
+<header class="header"><div class="eyebrow"><img class="brand-mark" src="brand_monochrome.png" alt=""/>СЕЙЧАС ИГРАЕТ</div><div class="topline"><button class="switcher" id="device">Очередь&nbsp; · &nbsp;Устройство</button><button class="queue-button" id="queueOpen" aria-label="Открыть очередь"><i></i><i></i><i></i></button></div></header>
 <div class="stack" id="stack" aria-label="Свайп влево — следующий трек, вправо — предыдущий"></div>
 <div class="track-title" id="title"><span id="titleInner">Vundabar - Alien blues</span></div>
 <div class="deck-track-title" id="deckTitle" aria-live="off" aria-hidden="true"></div>
@@ -278,7 +311,7 @@ html.lite-motion .stack::before{opacity:.58;animation:none!important;}
 <div class="actions"><button class="action" id="shuffle" aria-label="Случайный порядок"><svg viewBox="0 0 24 24"><path d="M3 4c7 0 9 16 18 16m0 0-4-4m4 4-4 2M3 20c4 0 6-4 8-8m3-4c2-3 4-4 7-4m0 0-4-2m4 2-4 4"/></svg></button></div>
 <div class="overlay" id="overlay" aria-hidden="true"><div class="sheet" id="queueSheet" role="dialog" aria-label="Очередь воспроизведения"><div class="sheet-grab-area" id="queueGrab" aria-label="Свайп вверх — развернуть, вниз — свернуть"><span class="sheet-grip"></span></div><div class="sheet-header"><h2>Очередь воспроизведения</h2></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
 <div class="library-panel" id="libraryPanel">
-  <div class="library-head"><h2 id="panelHeading">Библиотека</h2></div>
+  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><img class="brand-mark" src="brand_monochrome.png" alt=""/></div>
   <div id="libraryBrowse">
     <div class="library-search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><input class="search-input" id="librarySearch" placeholder="Найти трек, альбом или исполнителя" autocomplete="off" aria-label="Поиск музыки"/><button id="clearSearch" aria-label="Очистить поиск" hidden>×</button></div>
     <div class="library-tabs" id="libraryTabs"><button class="lib-tab active" data-mode="albums">Альбомы</button><button class="lib-tab" data-mode="artists">Исполнители</button><button class="lib-tab" data-mode="tracks">Треки</button></div>

@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.7: kinetic depth browsing, live sheet gestures, one-item Media3 moves.
+// The Gathering 0.8: return to playing-cover mode, palette light, in-library playback.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -154,18 +154,58 @@ let deckTransitioning=false;
 let lastAuraId='';
 const paletteCache=new Map();
 const requestedPalettes=new Set();
+// Enhance a colour only when a cover changes. Never recolour on animation frames.
+function vividAlbumColor(hex){
+  if(!/^#[a-f0-9]{6}$/i.test(String(hex)))return '#a88679';
+  const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255);
+  const max=Math.max(...rgb),min=Math.min(...rgb),delta=max-min;
+  let h=0,s=0,l=(max+min)/2;
+  if(delta>0){
+    s=delta/(1-Math.abs(2*l-1));
+    switch(max){
+      case rgb[0]:h=((rgb[1]-rgb[2])/delta)%6;break;
+      case rgb[1]:h=(rgb[2]-rgb[0])/delta+2;break;
+      default:h=(rgb[0]-rgb[1])/delta+4;
+    }
+    h=(h*60+360)%360;
+  }
+  // Neutral album artwork stays neutral; saturated artwork gains presence.
+  s=Math.min(.84,s<.13?Math.max(.09,s*1.35):Math.max(.44,s*1.32));
+  l=Math.max(.46,Math.min(.67,l*1.08+.1));
+  const a=s*Math.min(l,1-l),f=n=>{
+    const k=(n+h/30)%12;
+    return Math.round(255*(l-a*Math.max(-1,Math.min(k-3,9-k,1))));
+  };
+  return '#'+[f(0),f(8),f(4)].map(n=>n.toString(16).padStart(2,'0')).join('');
+}
+let ambientFront=0;
+let ambientColors='';
+function paintAmbientLight(colors){
+  const a=vividAlbumColor(colors[0]),b=vividAlbumColor(colors[1]);
+  const fingerprint=a+'|'+b;
+  if(fingerprint===ambientColors)return;
+  ambientColors=fingerprint;
+  const layers=[$('#ambientA'),$('#ambientB')];
+  const inactive=1-ambientFront;
+  const next=layers[inactive];
+  if(!next)return;
+  next.style.setProperty('--ambient-one',a+'d8');
+  next.style.setProperty('--ambient-two',b+'ca');
+  next.classList.add('visible');
+  layers[ambientFront]?.classList.remove('visible');
+  ambientFront=inactive;
+}
 function paintCoverAura(id,requestPalette=true) {
   if(!id)return;
-  if(id!==lastAuraId)lastAuraId=id;
+  lastAuraId=String(id);
   const item=track(id);
   const colors=paletteCache.get(String(id))||item?.colors||DEFAULT_COLORS;
-  const tint=(color,alpha)=>/^#[a-f0-9]{6}$/i.test(String(color))?color+alpha:'#b3a291'+alpha;
   const stack=$('#stack');
-  const a=tint(colors[0],'ae'),b=tint(colors[1],'a8');
+  const a=vividAlbumColor(colors[0])+'c9',b=vividAlbumColor(colors[1])+'bd';
   if(stack.style.getPropertyValue('--aura-a')!==a)stack.style.setProperty('--aura-a',a);
   if(stack.style.getPropertyValue('--aura-b')!==b)stack.style.setProperty('--aura-b',b);
-  // An Android worker samples a tiny thumbnail once for each album cover. No
-  // on-frame canvas reads, no FFT, and no CSS filter on the artwork itself.
+  paintAmbientLight(colors);
+  // Native samples a tiny cover in a background thread, once per ID.
   if(requestPalette && native?.requestCoverPalette && item?.coverUri &&
      (!lowPowerDevice || String(id)===String(current)) && !requestedPalettes.has(String(id))){
     if(requestedPalettes.size>120)requestedPalettes.clear();
@@ -211,7 +251,9 @@ function animateDeckTo(target){
   const start=deckPaintDepth;
   const distance=Math.abs(target-start);
   if(distance<.02 || lowPowerDevice && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){
-    paintDeck(target,false);return;
+    paintDeck(target,false);
+    if(target===0)restorePlayingCover();
+    return;
   }
   deckTransitioning=true;
   const duration=Math.min(840,350+140*Math.sqrt(distance));
@@ -224,7 +266,8 @@ function animateDeckTo(target){
     if(t<1){deckMotionFrame=requestAnimationFrame(step);return;}
     deckMotionFrame=0;deckTransitioning=false;
     paintDeck(target,false);
-    paintCoverAura(deckIdAt(target));
+    if(target===0)restorePlayingCover();
+    else paintCoverAura(deckIdAt(target));
   }
   deckMotionFrame=requestAnimationFrame(step);
 }
@@ -264,6 +307,13 @@ function leaveDeckMode(){
   $('#deckTitle').replaceChildren();
   $('#stack').classList.remove('deck-mode','depth-drag');
   $('#deckTitle').setAttribute('aria-hidden','true');
+}
+// Depth zero is the currently playing cover, not another browsing state.
+// Restoring it re-enables the normal horizontal gestures and full brightness.
+function restorePlayingCover(){
+  if(!deckMode)return;
+  leaveDeckMode();
+  stackMarkup();
 }
 function enterDeckMode(){
   if(deckMode)return true;
@@ -376,8 +426,7 @@ function selectDeckCover(offset){
   const id=deckIdAt(offset);
   if(!id)return;
   if(id===String(current)){
-    deckDepth=0;
-    leaveDeckMode();stackMarkup();return;
+    restorePlayingCover();return;
   }
   // Jumping to a viewed album cover is explicit. A vertical swipe never plays.
   choose(id,offset>0?1:-1);
@@ -395,6 +444,7 @@ function onDeckPlaybackAdvance(oldIndex,newIndex){
   stopDeckMotion();
   deckDepth=depth;
   paintDeck(depth,false);
+  if(depth===0)restorePlayingCover();
   updatePlayerChrome();
   return true;
 }
@@ -532,6 +582,7 @@ function choose(id, direction = 1, fromNative = false) {
   else { updateTimes(); }
   updatePlay();
   renderQueue();
+  syncLibraryPlayingMarkers();
 }
 function next() {
   if(stackAnimating){queuedNavigation=1;return;}
@@ -652,7 +703,7 @@ function playEntireAlbum(ids) {
     audio.play().then(()=>{playing=true;updatePlay();}).catch(()=>{playing=false;updatePlay();toast('Не удалось открыть альбом');});
   }
   updatePlay();
-  closeLibrary();
+  syncLibraryPlayingMarkers();
 }
 function commitUpcomingOrder(future,options={}) {
   const expected=upcomingIds();
@@ -1181,6 +1232,7 @@ function nativePlaybackState(state) {
         updateStack(direction); // auto-next animates only when not browsing the deck
       if(dragQueue)finishQueueDrag(true);
       renderQueue();
+      syncLibraryPlayingMarkers();
     }
   }
   if (track()?.uri && itemId === String(current)) {
@@ -1207,14 +1259,39 @@ window.nativePlaybackError = nativePlaybackError;
 // Unified library: search above Albums / Artists / Tracks, with a tile-based album browser.
 function libraryRow(t) {
   const row=document.createElement('div');row.className='library-row';
+  row.dataset.id=String(t.id);
   const main=document.createElement('button');main.className='lib-row-main';
   main.innerHTML='<span class="lib-cover">'+art(t)+'</span><span class="lib-track-info"><strong>'+esc(t.artist+' — '+t.title)+
     '</strong><small>'+esc(t.album||'Без альбома')+' · '+fmt(t.duration)+'</small></span>';
-  main.onclick=()=>{choose(t.id,1);closeLibrary();};
+  main.onclick=()=>choose(t.id,1);
   const menu=document.createElement('button');menu.className='lib-more';menu.type='button';
   menu.setAttribute('aria-label','Действия с треком '+t.title);menu.textContent='⋮';
   menu.onclick=e=>{e.stopPropagation();openTrackMenu(t.id);};
-  row.append(main,menu);return row;
+  const indicator=document.createElement('span');
+  indicator.className='lib-playing-marker';
+  indicator.setAttribute('aria-hidden','true');
+  indicator.textContent='▶';
+  row.append(main,indicator,menu);
+  markLibraryRow(row);
+  return row;
+}
+function markLibraryRow(row){
+  const isCurrent=row.dataset.id===String(current);
+  row.classList.toggle('is-current',isCurrent);
+  const main=row.querySelector('.lib-row-main');
+  if(main){
+    if(isCurrent)main.setAttribute('aria-current','true');
+    else main.removeAttribute('aria-current');
+  }
+}
+function syncLibraryPlayingMarkers(){
+  const panel=$('#libraryPanel');
+  if(!panel?.classList.contains('open'))return;
+  panel.querySelectorAll('.library-row[data-id]').forEach(markLibraryRow);
+  const playingAlbum=track() ? albumKey(track()) : '';
+  panel.querySelectorAll('.album-tile[data-album-key]').forEach(tile=>{
+    tile.classList.toggle('is-current-album',tile.dataset.albumKey===playingAlbum);
+  });
 }
 function albumKey(t){return Number(t.albumId)>0?'album:'+t.albumId:'fallback:'+t.artist+'::'+(t.album||'Без альбома');}
 function groupLibrary(mode) {
@@ -1234,6 +1311,8 @@ function groupLibrary(mode) {
 function createAlbumTile(items) {
   const t=items[0];
   const tile=document.createElement('button');tile.className='album-tile';tile.type='button';
+  tile.dataset.albumKey=albumKey(t);
+  tile.classList.toggle('is-current-album',tile.dataset.albumKey===(track()?albumKey(track()):''));
   tile.innerHTML='<span class="album-tile-art">'+art(t)+'</span><strong>'+esc(t.album||'Без альбома')+
     '</strong><small>'+esc(t.artist)+' · '+items.length+' тр.</small>';
   tile.onclick=()=>openAlbum(items);
@@ -1336,7 +1415,7 @@ function closeTrackMenu(){
 $('#menuClose').onclick=closeTrackMenu;
 $('#trackMenu').addEventListener('click',e=>{if(e.target===$('#trackMenu'))closeTrackMenu();});
 $('#menuPlayNext').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id)putNext(id);};
-$('#menuPlayNow').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id){choose(id,1);closeLibrary();}};
+$('#menuPlayNow').onclick=()=>{const id=trackMenuId;closeTrackMenu();if(id)choose(id,1);};
 function closeLibrary(){
   closeTrackMenu();closeAlbum();$('#libraryPanel').classList.remove('open');
   document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.tab==='Плеер'));
