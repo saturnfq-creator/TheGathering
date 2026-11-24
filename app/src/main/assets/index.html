@@ -340,6 +340,44 @@ html.lite-motion .album>.cover-rim{box-shadow:0 0 8px var(--aura-a,#bda18f88),
 .queue-shuffle-button.shuffle-pulse svg{animation:shuffle-confirm 330ms ease-out;}
 @keyframes shuffle-confirm{0%{transform:rotate(-12deg);opacity:.7}100%{transform:rotate(0);opacity:1}}
 @media(prefers-reduced-motion:reduce){.queue-shuffle-button.shuffle-pulse svg{animation:none;}}
+
+/* v0.10 — restore v0.8 strength to the travelling rim, without clipping it. */
+.album.front{contain:layout style!important;overflow:visible!important;}
+.album.front>.cover-rim{border:1.5px solid #fff3d2db;
+  box-shadow:0 0 9px #fff1d6bc,0 0 24px var(--aura-a,#bda18f99),
+             inset 0 0 5px #fff7df80,0 0 40px var(--aura-b,#bda18f77);
+  opacity:.98;}
+.stack:not(.deck-mode) .album.front>.cover-rim{opacity:.98;}
+/* One colour palette, taken from the actual playing song, paints all three screens.
+   Gradients are static while browsing covers; no per-frame blur is needed. */
+.screen{--panel-light-a:#c08d6c50;--panel-light-b:#9876873b;}
+.sheet,.overlay.expanded .sheet{
+  background:radial-gradient(ellipse 88% 44% at 45% 3%,var(--panel-light-a),transparent 78%),
+             radial-gradient(ellipse 82% 55% at 94% 63%,var(--panel-light-b),transparent 82%),
+             linear-gradient(155deg,#302923,#27221f 65%,#211d1b);
+}
+.queue-list{background:transparent;}
+.library-panel{
+  background:radial-gradient(ellipse 98% 42% at 50% 9%,var(--panel-light-a),transparent 82%),
+             radial-gradient(ellipse 78% 43% at 94% 68%,var(--panel-light-b),transparent 86%),
+             linear-gradient(155deg,#27231f,#191716);
+}
+.library-head-actions{display:flex;align-items:center;gap:12px;}
+.library-import{display:grid;place-items:center;width:34px;height:34px;padding:0;
+  border:1px solid #e4cdb15e;border-radius:12px;background:#e7d3b618;color:#e8d4bb;
+  font-size:23px;line-height:1;}
+/* Shuffle is a real toggle: off is subdued, on has the same warm glass emphasis
+   used for the playing artwork. */
+.queue-shuffle-button{color:#998f83;border-color:#ffffff26;
+  background:linear-gradient(142deg,#ffffff0f,#ffffff05 65%);
+  box-shadow:inset 0 1px #ffffff13;opacity:.69;
+  transition:color 220ms ease,border-color 220ms ease,box-shadow 220ms ease,
+             background-color 220ms ease,opacity 220ms ease;}
+.queue-shuffle-button.is-active{color:#ffe8ba;border-color:#f8d3a5be;
+  background:linear-gradient(135deg,#d8aa724e,#fff0cf20 70%);
+  box-shadow:inset 0 1px #fff2d58c,0 0 15px #e9b77d64;
+  opacity:1;}
+.queue-shuffle-button:disabled{opacity:.28;}
 </style></head><body><main class="screen" id="screen">
 <div class="ambient-layer visible" id="ambientA" aria-hidden="true"></div>
 <div class="ambient-layer" id="ambientB" aria-hidden="true"></div>
@@ -351,9 +389,9 @@ html.lite-motion .album>.cover-rim{box-shadow:0 0 8px var(--aura-a,#bda18f88),
 <button class="play" id="play" aria-label="Воспроизведение или пауза"></button>
 <div class="times"><span id="elapsed">1:42</span><span id="duration">4:18</span></div>
 
-<div class="overlay" id="overlay" aria-hidden="true"><div class="sheet" id="queueSheet" role="dialog" aria-label="Очередь воспроизведения"><div class="sheet-grab-area" id="queueGrab" aria-label="Свайп вверх — развернуть, вниз — свернуть"><span class="sheet-grip"></span></div><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="queue-shuffle-button" id="shuffleQueue" title="Перемешать очередь" aria-label="Перемешать оставшиеся треки"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h2c6.5 0 7.5 14 14 14h2m0 0-3-3m3 3-3 3M3 19h2c2.8 0 4.6-2.5 6.2-5.3M14 9.1C15.7 6.8 17.7 5 21 5m0 0-3-3m3 3-3 3"/></svg></button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span><button class="add" id="add">＋ Добавить MP3</button></div></div></div>
+<div class="overlay" id="overlay" aria-hidden="true"><div class="sheet" id="queueSheet" role="dialog" aria-label="Очередь воспроизведения"><div class="sheet-grab-area" id="queueGrab" aria-label="Свайп вверх — развернуть, вниз — свернуть"><span class="sheet-grip"></span></div><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="queue-shuffle-button" id="shuffleQueue" title="Включить перемешивание" aria-label="Включить перемешивание" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h2c6.5 0 7.5 14 14 14h2m0 0-3-3m3 3-3 3M3 19h2c2.8 0 4.6-2.5 6.2-5.3M14 9.1C15.7 6.8 17.7 5 21 5m0 0-3-3m3 3-3 3"/></svg></button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span></div></div></div>
 <div class="library-panel" id="libraryPanel">
-  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><img class="brand-mark" src="brand_monochrome.png" alt=""/></div>
+  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><div class="library-head-actions"><button class="library-import" id="add" type="button" aria-label="Добавить MP3 из файлов" title="Импортировать MP3">＋</button><img class="brand-mark" src="brand_monochrome.png" alt=""/></div></div>
   <div id="libraryBrowse">
     <div class="library-search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><input class="search-input" id="librarySearch" placeholder="Найти трек, альбом или исполнителя" autocomplete="off" aria-label="Поиск музыки"/><button id="clearSearch" aria-label="Очистить поиск" hidden>×</button></div>
     <div class="library-tabs" id="libraryTabs"><button class="lib-tab active" data-mode="albums">Альбомы</button><button class="lib-tab" data-mode="artists">Исполнители</button><button class="lib-tab" data-mode="tracks">Треки</button></div>
@@ -365,7 +403,7 @@ html.lite-motion .album>.cover-rim{box-shadow:0 0 8px var(--aura-a,#bda18f88),
 <nav class="bottom-nav" id="bottomNav">
 <button class="nav-item active" data-tab="Плеер"><svg viewBox="0 0 24 24"><path d="M9 5L20 12L9 19Z" fill="currentColor" stroke="none"/></svg><span>Плеер</span></button>
 <button class="nav-item" data-tab="Библиотека"><svg viewBox="0 0 24 24"><path d="M4 4v16M9 4v16M14 6v14M19 3v17"/></svg><span>Библиотека</span></button>
-<button class="nav-item" data-tab="Профиль"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-5 16-5 16 0"/></svg><span>Профиль</span></button>
+<button class="nav-item" data-tab="Настройки"><svg viewBox="0 0 24 24"><path d="M10.6 2.8h2.8l.5 2.1c.5.2 1 .5 1.5.9l2-.8 2 2-.8 2c.3.5.6 1 .8 1.5l2.1.5v2.8l-2.1.5c-.2.5-.5 1-.8 1.5l.8 2-2 2-2-.8c-.5.3-1 .6-1.5.8l-.5 2.1h-2.8l-.5-2.1c-.5-.2-1-.5-1.5-.8l-2 .8-2-2 .8-2c-.3-.5-.6-1-.8-1.5l-2.1-.5v-2.8l2.1-.5c.2-.5.5-1 .8-1.5l-.8-2 2-2 2 .8c.5-.4 1-.7 1.5-.9z"/><circle cx="12" cy="12" r="3"/></svg><span>Настройки</span></button>
 </nav>
 <div class="toast" id="toast"></div><input id="files" type="file" accept="audio/*,.mp3,.m4a,.wav,.ogg,.flac" multiple hidden><audio id="audio"></audio></main>
 <script src="app.js"></script></body></html>

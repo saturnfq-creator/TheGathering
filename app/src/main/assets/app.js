@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.9: travelling cover rim, compositor-friendly queue, real shuffle order.
+// The Gathering 0.10: v0.8-strength travelling rim, fixed playing-track palette, toggle shuffle.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -187,6 +187,11 @@ let ambientFront=0;
 let ambientColors='';
 function paintAmbientLight(colors){
   const a=vividAlbumColor(colors[0]),b=vividAlbumColor(colors[1]);
+  // Static light shared by queue and library, updated only when a playing
+  // artwork palette actually changes. No separate animated overlay layers.
+  const screen=$('#screen');
+  screen?.style.setProperty('--panel-light-a',a+'64');
+  screen?.style.setProperty('--panel-light-b',b+'45');
   const fingerprint=a+'|'+b;
   if(fingerprint===ambientColors)return;
   ambientColors=fingerprint;
@@ -201,8 +206,11 @@ function paintAmbientLight(colors){
   ambientFront=inactive;
 }
 function paintCoverAura(id,requestPalette=true) {
+  // Browsing the vertical deck must NEVER recolour the surrounding interface.
+  // Only the currently playing track owns the background and the rim palette.
+  id=String(current);
   if(!id)return;
-  lastAuraId=String(id);
+  lastAuraId=id;
   const item=track(id);
   const colors=paletteCache.get(String(id))||item?.colors||DEFAULT_COLORS;
   const stack=$('#stack');
@@ -272,7 +280,7 @@ function animateDeckTo(target){
     deckMotionFrame=0;deckTransitioning=false;
     paintDeck(target,false);
     if(target===0)restorePlayingCover();
-    else paintCoverAura(deckIdAt(target));
+    // Browsing is visual only; the palette stays with the playing song.
   }
   deckMotionFrame=requestAnimationFrame(step);
 }
@@ -422,7 +430,7 @@ function paintDeck(depth,isDragging){
   }
   paintDeckTitle(depth);
   // Palette changes only when the finger has stopped, not on every frame.
-  if(!isDragging)paintCoverAura(deckIdAt(Math.round(depth)));
+  // Browsing depth must not trigger palette changes or artwork analysis.
 }
 function focusDeckOffset(){return Math.max(0,Math.min(order.length-1,Math.round(deckDepth)));}
 function selectDeckCover(offset){
@@ -449,6 +457,9 @@ function onDeckPlaybackAdvance(oldIndex,newIndex){
   stopDeckMotion();
   deckDepth=depth;
   paintDeck(depth,false);
+  // The playing song may advance while the user is browsing other covers.
+  // The ambient palette follows THAT new playing song, not the viewed depth.
+  paintCoverAura(current);
   if(depth===0)restorePlayingCover();
   updatePlayerChrome();
   return true;
@@ -650,6 +661,7 @@ function renderQueue() {
   $('#queueCount').textContent = 'В очереди: ' + upcoming.length;
   const shuffleButton=$('#shuffleQueue');
   if(shuffleButton)shuffleButton.disabled=upcoming.length<2;
+  updateShuffleButton();
 }
 function refreshStackForQueue() {
   if(deckMode){paintDeck(deckDepth,false);return;}
@@ -689,6 +701,7 @@ function moveAlbumNext(ids) {
 function playEntireAlbum(ids) {
   const unique=[...new Set(ids.map(String))].filter(id=>lookup.has(id));
   if(!unique.length)return;
+  resetShuffleMode();
   const rest=order.filter(id=>!unique.includes(id));
   order=[...unique,...rest];
   current=unique[0];currentPosition=0;lastNativeStamp=0;playerState=null;pendingSeek=null;
@@ -943,11 +956,46 @@ $('#play').onclick = () => {
   } else toast('Открой «Библиотека» и выбери песню');
   updatePlay();
 };
-// Shuffle the ACTUAL upcoming playlist, rather than randomising only the
-// JavaScript manual Next button. Media3 then auto-advances in this same order.
+// Shuffle is a visible, reversible mode, not an unlabeled one-shot action.
+// Both transitions update the real Media3 playlist, preserving current audio.
+let shuffleActive=false;
+let shuffleReferenceOrder=null;
+function updateShuffleButton(){
+  const button=$('#shuffleQueue');
+  if(!button)return;
+  button.classList.toggle('is-active',shuffleActive);
+  button.setAttribute('aria-pressed',String(shuffleActive));
+  const label=shuffleActive?'Выключить перемешивание':'Включить перемешивание';
+  button.setAttribute('aria-label',label);
+  button.title=label;
+}
+function resetShuffleMode(){
+  shuffleActive=false;
+  shuffleReferenceOrder=null;
+  updateShuffleButton();
+}
 function shuffleUpcoming(){
+  if(shuffleActive){
+    const original=shuffleReferenceOrder||[];
+    const live=new Set(order.map(String));
+    const reference=original.filter(id=>live.has(id));
+    const untracked=order.filter(id=>!reference.includes(id));
+    const restored=[...reference,...untracked];
+    const position=restored.indexOf(String(current));
+    const rotated=position>=0
+      ?[...restored.slice(position),...restored.slice(0,position)]
+      :[String(current),...restored.filter(id=>id!==String(current))];
+    order=rotated;
+    resetShuffleMode();
+    history.length=0;
+    syncQueueToNative();
+    refreshStackForQueue();
+    renderQueue();
+    return true;
+  }
   const future=upcomingIds();
   if(future.length<2)return false;
+  shuffleReferenceOrder=order.slice();
   const mixed=future.slice();
   for(let i=mixed.length-1;i>0;i--){
     const j=Math.floor(Math.random()*(i+1));
@@ -955,6 +1003,7 @@ function shuffleUpcoming(){
   }
   if(mixed.every((id,i)=>id===future[i]))mixed.push(mixed.shift());
   order=[String(current),...mixed];
+  shuffleActive=true;updateShuffleButton();
   history.length=0; // the prior linear back-stack no longer matches this queue
   syncQueueToNative();
   refreshStackForQueue();
@@ -1465,7 +1514,7 @@ document.querySelectorAll('.nav-item').forEach(button=>button.addEventListener('
     $('#libraryPanel').classList.add('open');
     renderNativeLibrary();
   }else if(tab==='Плеер')closeLibrary();
-  else toast('Профиль появится в следующей версии');
+  else toast('Настройки появятся в следующей версии');
 }));
 document.querySelectorAll('.lib-tab').forEach(button=>button.onclick=()=>renderNativeLibrary(button.dataset.mode));
 $('#albumBack').onclick=closeAlbum;
@@ -1489,6 +1538,7 @@ function nativeLibraryLoaded(items) {
     duration:Number(item.duration)||0,uri:item.uri,coverUri:item.coverUri||'',colors:DEFAULT_COLORS
   }));
   lookup = new Map(tracks.map(t=>[String(t.id),t]));
+  resetShuffleMode();
   order = tracks.map(t=>String(t.id));
   if (!lookup.has(current)) current=order[0];
   if (lastNativeState?.id && lookup.has(String(lastNativeState.id))) {

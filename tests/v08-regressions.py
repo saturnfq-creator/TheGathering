@@ -35,7 +35,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(900)
     assert not page.evaluate('deckMode'), 'at depth 0 it must restore standard playing mode'
     assert page.locator('#stack .front').count()==1
-    assert page.evaluate("getComputedStyle(document.querySelector('#stack .front .cover-rim')).opacity")=='0.94'
+    assert float(page.evaluate("getComputedStyle(document.querySelector('#stack .front .cover-rim')).opacity"))>=.94
     before=page.evaluate('current')
     drag(x,y,-170,0)
     assert page.evaluate('current')!=before, 'horizontal swipe should resume without tapping'
