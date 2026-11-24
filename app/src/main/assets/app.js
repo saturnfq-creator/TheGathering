@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.11: deferred travelling glow, low-overdraw timeline, glass library, responsive queue gestures.
+// The Gathering 0.12: continuous deck-to-player handoff and compositor-only horizontal gestures.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -49,6 +49,7 @@ let lastDisplayedSecond = -1;
 let importedCounter = 0;
 let queueDisplayLimit = 65;
 let titleMeasureFrame = 0;
+let titleMeasureTimer = 0;
 let glowWakeTimer = 0;
 // The glow casts several shadows. The expensive shadow stays invisible while a
 // card is changing position and returns only after the compositor transition.
@@ -126,14 +127,18 @@ function updateTimes(now = performance.now()) {
   $('#timeline').setAttribute('aria-valuenow',String(Math.floor(seconds)));
   $('#timeline').setAttribute('aria-valuemax',String(Math.floor(duration)));
 }
-function updatePlayerChrome() {
+function updatePlayerChrome(deferOverflow=false) {
   const t = track();if (!t) return;
   const label = $('#titleInner');
   label.textContent = t.artist + ' - ' + t.title;
   $('#title').classList.remove('marquee');
   label.style.removeProperty('--title-overflow');
   if (titleMeasureFrame) cancelAnimationFrame(titleMeasureFrame);
-  titleMeasureFrame = requestAnimationFrame(updateTitleOverflow);
+  if (titleMeasureTimer) clearTimeout(titleMeasureTimer);
+  // Avoid reading text layout in the same frame that four covers transition.
+  if(deferOverflow){
+    titleMeasureTimer=setTimeout(()=>{titleMeasureTimer=0;titleMeasureFrame=requestAnimationFrame(updateTitleOverflow);},550);
+  }else titleMeasureFrame=requestAnimationFrame(updateTitleOverflow);
   lastDisplayedSecond=-1;
   updateTimes();
 }
@@ -156,7 +161,7 @@ window.addEventListener('resize',()=>{
 // Image clipping is inside the artwork child so that the outside halo can
 // move with a transformed card instead of being cut at its edges.
 function fillStackCard(card,item,eager=false){
-  card.innerHTML='<div class="cover-image">'+art(item,eager)+'</div><div class="cover-rim" aria-hidden="true"></div>';
+  card.innerHTML='<div class="cover-image">'+art(item,eager)+'</div><div class="deck-veil" aria-hidden="true"></div><div class="cover-rim" aria-hidden="true"></div>';
 }
 function makeStackCard(id,role) {
   const card=document.createElement('div');
@@ -283,7 +288,7 @@ function animateDeckTo(target){
   const distance=Math.abs(target-start);
   if(distance<.02 || lowPowerDevice && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){
     paintDeck(target,false);
-    if(target===0)restorePlayingCover();
+    if(target===0)requestAnimationFrame(()=>{if(deckMode && deckDepth===0)restorePlayingCover();});
     return;
   }
   deckTransitioning=true;
@@ -297,7 +302,7 @@ function animateDeckTo(target){
     if(t<1){deckMotionFrame=requestAnimationFrame(step);return;}
     deckMotionFrame=0;deckTransitioning=false;
     paintDeck(target,false);
-    if(target===0)restorePlayingCover();
+    if(target===0)requestAnimationFrame(()=>{if(deckMode && deckDepth===0)restorePlayingCover();});
     // Browsing is visual only; the palette stays with the playing song.
   }
   deckMotionFrame=requestAnimationFrame(step);
@@ -328,23 +333,63 @@ function deckIdAt(offset){
   const p=index();
   return p<0||offset<0||offset>=order.length?null:order[(p+offset)%order.length];
 }
+function clearDeckTitles(immediate=false){
+  deckLabelNodes.clear();
+  const caption=$('#deckTitle');
+  caption.replaceChildren();
+  caption.style.removeProperty('opacity');
+  caption.setAttribute('aria-hidden','true');
+  // Restore opacity before leaving deck mode. Cancel any in-flight CSS opacity
+  // interpolation so WebView cannot resurrect the last browsing frame.
+  const playingTitle=$('#title');
+  if(immediate){
+    playingTitle.style.transition='none';
+    for(const animation of playingTitle.getAnimations?.() || [])animation.cancel();
+  }
+  playingTitle.style.opacity='1';
+  if(immediate)requestAnimationFrame(()=>playingTitle.style.removeProperty('transition'));
+}
 function leaveDeckMode(){
   if(deckHorizontalTimer){clearTimeout(deckHorizontalTimer);deckHorizontalTimer=0;}
   stopDeckMotion();
   deckMode=false;
   deckDepth=0;deckPaintDepth=0;
   deckCards.clear();
-  deckLabelNodes.clear();
-  $('#deckTitle').replaceChildren();
-  $('#stack').classList.remove('deck-mode','depth-drag');
-  $('#deckTitle').setAttribute('aria-hidden','true');
+  clearDeckTitles();
+  $('#stack').classList.remove('deck-mode','depth-drag','deck-handoff');
 }
-// Depth zero is the currently playing cover, not another browsing state.
-// Restoring it re-enables the normal horizontal gestures and full brightness.
+// At depth zero the same decoded cover and its neighbouring DOM elements
+// become the ordinary player stack. Never replace the front image with an
+// equivalent *new* image: doing so created a bright/dark flash and a jank.
 function restorePlayingCover(){
   if(!deckMode)return;
-  leaveDeckMode();
-  stackMarkup();
+  stopDeckMotion();
+  const n=order.length,p=index(), stack=$('#stack');
+  const ids=[0,1,2].map(offset=>order[(p+offset)%n]);
+  const cards=ids.map((id,offset)=>{
+    const existing=deckCards.get(offset);
+    return existing?.dataset.id===String(id)?existing:makeStackCard(id,'deck-card');
+  });
+  const oldPrev=stackCards?.prev;
+  const previousId=order[(p-1+n)%n];
+  const prevCard=oldPrev?.dataset.id===String(previousId)?oldPrev:makeStackCard(previousId,'prev-card');
+  // The approaching front image is already fully undimmed by paintDeck().
+  // Do NOT detach/reinsert the actual front image: WebView can discard a
+  // texture and flash or block when a decoded artwork is reparented.
+  for(const [offset,card] of deckCards){if(offset>2)card.remove();}
+  if(!prevCard.isConnected)stack.appendChild(prevCard);
+  deckMode=false;deckDepth=0;deckPaintDepth=0;
+  // Stop title transitions under the deck CSS before leaving browse mode.
+  clearDeckTitles(true);
+  stack.classList.remove('deck-mode','depth-drag');
+  ['back2','back1','front'].forEach((role,i)=>setCardRole(cards[2-i],role));
+  setCardRole(prevCard,'prev-card',true);
+  stackCards={back2:cards[2],back1:cards[1],front:cards[0],prev:prevCard};
+  deckCards.clear();
+  // Bright travelling rim only after the sheet settles. The card itself
+  // already has full brightness, so this is never a sudden image flash.
+  wakeCoverGlow(160);
+  requestAnimationFrame(()=>{if(prevCard.isConnected)prevCard.classList.remove('recycle');});
 }
 function enterDeckMode(){
   if(deckMode)return true;
@@ -363,6 +408,8 @@ function enterDeckMode(){
   stack.replaceChildren(...deckCards.values());
   stackCards=null;
   deckDepth=0;deckPaintDepth=0;
+  // Enter browsing at precisely the normal-player visual state. The title and
+  // dark veil fade progressively only as depth leaves zero.
   paintDeck(0,false);
   return true;
 }
@@ -399,14 +446,17 @@ function paintDeck(depth,isDragging){
   depth=clampDeckDepth(depth);
   deckPaintDepth=depth;
   const stack=$('#stack');
-  // On release, commit the last finger-driven position before enabling easing.
-  if(!isDragging && stack.classList.contains('depth-drag'))stack.getBoundingClientRect();
+  // Never measure the stack during a moving gesture. Measuring between style
+  // writes forced an Android WebView synchronous layout on some frames.
   stack.classList.toggle('depth-drag',!!isDragging);
   const low=Math.max(0,Math.floor(depth)-1);
   const high=Math.min(order.length-1,Math.ceil(depth)+4);
   // Only at most 7 decoded cover elements around the active depth.
   for(const [offset,card] of deckCards){
-    if(offset<low||offset>high){card.remove();deckCards.delete(offset);}
+    // Retain the currently playing image even when far away in the virtual deck.
+    // Its opacity is zero at distant depths, but preserving the decoded node
+    // prevents a new texture upload on the final swipe back to depth zero.
+    if(offset!==0 && (offset<low||offset>high)){card.remove();deckCards.delete(offset);}
   }
   const fragment=document.createDocumentFragment();
   for(let offset=low;offset<=high;offset++){
@@ -433,7 +483,9 @@ function paintDeck(depth,isDragging){
       const r=Math.min(5,relative);
       y=-(7.8*r-.25*r*r);
       scale=Math.max(.76,1-.049*r);
-      opacity=r<=1 ? 1-.63*r : Math.max(.06,.37-.085*(r-1));
+      // Match the normal stack at zero: no abrupt change in back-card opacity
+      // when beginning/end browsing, then gently thin out deeper covers.
+      opacity=r<=1 ? 1-.08*r : Math.max(.09,.92-.19*(r-1));
     }else{
       // The outgoing front cover moves only a little DOWN while fading away.
       const r=Math.min(1,-relative);
@@ -445,7 +497,18 @@ function paintDeck(depth,isDragging){
     card.style.transform=`translate3d(0,${y}%,0) scale(${scale})`;
     card.style.opacity=String(opacity);
     card.style.pointerEvents=(relative>=-.1 && relative<=2.7)?'auto':'none';
+    // The current album gradually brightens as it approaches depth zero.
+    // Only the front card needs this per-frame opacity change, not a live blur.
+    if(offset===0){
+      const veil=card.querySelector('.deck-veil');
+      if(veil)veil.style.opacity=String(Math.min(.20,Math.max(0,depth*.24)));
+    }
   }
+  // A continuous title crossfade avoids the final one-frame jump from the
+  // queue caption back to the playing title.
+  const normal=Math.max(0,Math.min(1,1-depth*1.45));
+  $('#title').style.opacity=String(normal);
+  $('#deckTitle').style.opacity=String(1-normal);
   paintDeckTitle(depth);
   // Palette changes only when the finger has stopped, not on every frame.
   // Browsing depth must not trigger palette changes or artwork analysis.
@@ -523,7 +586,7 @@ function recycleCard(card,id,role) {
 }
 function updateStack(direction=0) {
   if(deckMode){leaveDeckMode();stackMarkup();return;}
-  updatePlayerChrome();
+  updatePlayerChrome(!!direction);
   if(!direction || !stackCards || order.length<2){stackMarkup();return;}
   if(stackAnimating){stackNeedsRebuild=true;return;}
   const old=stackCards;
@@ -561,6 +624,8 @@ function updateStack(direction=0) {
     }
     stackAnimating=false;
     if(stackNeedsRebuild || stackCards.front.dataset.id!==String(current))stackMarkup();
+    // Update album palette once after the slide, never while dragging.
+    paintCoverAura(current);
     // Light emerges once the NEW cover has completed the slide, not during it.
     wakeCoverGlow(250);
     if(queuedNavigation){
@@ -584,7 +649,12 @@ function choose(id, direction = 1, fromNative = false) {
     const oldTrack=track(old), newTrack=track(id);
     const oldAlbum=oldTrack?.albumId || oldTrack?.album || oldTrack?.coverUri || '';
     const newAlbum=newTrack?.albumId || newTrack?.album || newTrack?.coverUri || '';
-    if(deckMode || (oldAlbum!==newAlbum && oldAlbum && newAlbum))crossfadeAlbumScene();
+    // The adjacent cards are already in the stack. Cloning the complete stack
+    // on every album boundary doubled texture memory and stalled some WebViews.
+    // Only non-adjacent selections need an inter-album scene crossfade.
+    const oldPos=order.indexOf(old),newPos=order.indexOf(id),count=order.length;
+    const adjacent=count>1 && (newPos===(oldPos+1)%count || oldPos===(newPos+1)%count);
+    if(deckMode || (!adjacent && oldAlbum!==newAlbum && oldAlbum && newAlbum))crossfadeAlbumScene();
     if (!fromNative && direction > 0) history.push(old);
     current = id;
     currentPosition = 0;
@@ -1325,7 +1395,9 @@ function nativePlaybackState(state) {
         (oldIndex===(newIndex+1)%order.length)?-1:0;
       const oldAlbum=track(current)?.albumId || track(current)?.album || '';
       const incomingAlbum=track(itemId)?.albumId || track(itemId)?.album || '';
-      if(!deckMode && oldAlbum && incomingAlbum && oldAlbum!==incomingAlbum)crossfadeAlbumScene();
+      // Native auto-next also uses preloaded neighbouring cards, not a cloned
+      // four-image snapshot while the user is swiping.
+      if(!deckMode && direction===0 && oldAlbum && incomingAlbum && oldAlbum!==incomingAlbum)crossfadeAlbumScene();
       current = itemId;
       currentPosition = 0;
       playerState = null;

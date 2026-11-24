@@ -424,6 +424,36 @@ html.is-playing:not(.lite-motion) .stack::before{animation:none!important;}
 @media (max-width:520px){
   .bottom-nav{backdrop-filter:blur(9px) saturate(1.1);-webkit-backdrop-filter:blur(9px) saturate(1.1);}
 }
+
+/* v0.12: use compositor-only opacity/transform through every cover gesture.
+   Card-wide blur, brightness filter and mask layers are costly on Android GPUs.
+   Reproduce the soft back-card shading with a static translucent overlay. */
+.album{filter:none!important;mask-image:none!important;-webkit-mask-image:none!important;
+  transition-property:transform,opacity!important;}
+.album.back1,.album.back2,.album.leaving-left,.album.leaving-right,.album.prev-card{
+  filter:none!important;mask-image:none!important;-webkit-mask-image:none!important;}
+.album>.cover-image::after{content:"";position:absolute;inset:0;border-radius:inherit;
+  background:linear-gradient(145deg,#0e1013bf,#17151d9d);pointer-events:none;
+  opacity:0;transition:opacity 380ms ease;}
+.album.back1>.cover-image::after{opacity:.26;}
+.album.back2>.cover-image::after{opacity:.43;}
+/* Soft vignette rather than an entire blurred image texture. */
+.album.back1>.cover-image,.album.back2>.cover-image{
+  box-shadow:inset 0 0 9px #15100f3a;}
+.album.deck-card>.cover-image::after{opacity:0;}
+.album>.deck-veil{position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:#101018;opacity:0;z-index:2;}
+.stack.deck-mode .album.deck-card::after{content:none!important;}
+.stack:not(.deck-mode) .album>.deck-veil{opacity:0!important;}
+.stack.deck-mode .album>.deck-veil{opacity:.16;}
+.stack.depth-drag .album>.deck-veil{transition:none;}
+/* Don't animate a second independent title switch at the end of a deck swipe.
+   JS drives the blend continuously from depth 1 to depth 0. */
+.stack.deck-mode ~ .track-title,
+.stack.deck-mode ~ .deck-track-title{transition:none!important;}
+.stack.is-sliding .album{will-change:transform,opacity;}
+/* Reduce per-frame paint regions around stack by never animating its global halo. */
+.stack::before{animation:none!important;will-change:auto!important;}
 </style></head><body><main class="screen" id="screen">
 <div class="ambient-layer visible" id="ambientA" aria-hidden="true"></div>
 <div class="ambient-layer" id="ambientB" aria-hidden="true"></div>

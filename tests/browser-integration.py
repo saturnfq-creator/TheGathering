@@ -65,7 +65,7 @@ with sync_playwright() as p:
     drag(x,y,175,0)
     page.wait_for_timeout(45)
     assert page.evaluate('current')=='t11'
-    assert page.locator('.stack-scene-old').count()==1
+    assert page.locator('.stack-scene-old').count()==0  # adjacent slide uses existing cards
     page.wait_for_timeout(650)
     # Queue sheet follows the finger before release.
     page.locator('#queueOpen').click()
