@@ -1,5 +1,5 @@
 'use strict';
-// The Gathering 0.10: v0.8-strength travelling rim, fixed playing-track palette, toggle shuffle.
+// The Gathering 0.11: deferred travelling glow, low-overdraw timeline, glass library, responsive queue gestures.
 // Native Media3 remains the sole source of playback position and state.
 // Keep the four permanent cover layers; paint only transforms while dragging.
 const $ = selector => document.querySelector(selector);
@@ -11,7 +11,8 @@ const coverData = 'file:///android_asset/demo_cover.png';
 // WebView often does not expose deviceMemory, so treat it only as an optional hint.
 const lowPowerDevice = (Number(navigator.deviceMemory) > 0 && Number(navigator.deviceMemory) <= 3) ||
   (Number(navigator.hardwareConcurrency) > 0 && Number(navigator.hardwareConcurrency) <= 4) ||
-  !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ||
+  !!(native && typeof native.isLowRamDevice==='function' && native.isLowRamDevice());
 if(lowPowerDevice) document.documentElement.classList.add('lite-motion');
 
 let tracks = [
@@ -48,6 +49,23 @@ let lastDisplayedSecond = -1;
 let importedCounter = 0;
 let queueDisplayLimit = 65;
 let titleMeasureFrame = 0;
+let glowWakeTimer = 0;
+// The glow casts several shadows. The expensive shadow stays invisible while a
+// card is changing position and returns only after the compositor transition.
+function muteCoverGlow(){
+  clearTimeout(glowWakeTimer);
+  glowWakeTimer=0;
+  $('#stack').classList.add('glow-muted');
+}
+function wakeCoverGlow(delay=250){
+  clearTimeout(glowWakeTimer);
+  glowWakeTimer=setTimeout(()=>{
+    glowWakeTimer=0;
+    if(!stackAnimating && !swipe && !deckMode){
+      $('#stack').classList.remove('glow-muted');
+    }
+  },delay);
+}
 
 function track(id = current) { return lookup.get(String(id)); }
 function index() { return order.indexOf(String(current)); }
@@ -484,6 +502,7 @@ function stackMarkup() {
   stackCards=cards;
   paintCoverAura(current);
   updatePlayerChrome();
+  if($('#stack').classList.contains('glow-muted') && !stackAnimating)wakeCoverGlow(390);
 }
 function setCardRole(card,role,recycle=false) {
   card.className='album '+role+(recycle?' recycle':'');
@@ -542,6 +561,8 @@ function updateStack(direction=0) {
     }
     stackAnimating=false;
     if(stackNeedsRebuild || stackCards.front.dataset.id!==String(current))stackMarkup();
+    // Light emerges once the NEW cover has completed the slide, not during it.
+    wakeCoverGlow(250);
     if(queuedNavigation){
       const dir=queuedNavigation;
       queuedNavigation=0;
@@ -1008,9 +1029,6 @@ function shuffleUpcoming(){
   syncQueueToNative();
   refreshStackForQueue();
   renderQueue();
-  const btn=$('#shuffleQueue');
-  btn?.classList.remove('shuffle-pulse');
-  if(btn){void btn.offsetWidth;btn.classList.add('shuffle-pulse');}
   return true;
 }
 $('#shuffleQueue').onclick=shuffleUpcoming;
@@ -1058,7 +1076,8 @@ function startSheetSwipe(e){
   queueSheet.classList.add('sheet-following');
   e.preventDefault();
 }
-[queueGrab,queueSheet.querySelector('.sheet-header'),$('#queueNow')]
+[queueGrab,queueSheet.querySelector('.sheet-header'),$('#queueNow'),
+  ...queueSheet.querySelectorAll('.queue-caption'),queueSheet.querySelector('.foot')]
   .filter(Boolean).forEach(el=>el.addEventListener('pointerdown',startSheetSwipe));
 function updateSheetSwipe(e){
   const g=sheetSwipe;
@@ -1114,7 +1133,9 @@ queueList.addEventListener('touchmove',e=>{
   const l=listSwipe;
   if(!l||dragQueue||e.touches.length!==1)return;
   const y=e.touches[0].clientY;
-  if(!l.active && y-l.y>12 && queueList.scrollTop<=1 && !sheetSwipe){
+  const delta=y-l.y;
+  const canMoveSheet=delta>12 || (delta< -16 && sheetStage==='partial');
+  if(!l.active && canMoveSheet && queueList.scrollTop<=1 && !sheetSwipe){
     l.active=true;
     sheetSwipe={pointer:'list-touch',startY:l.y,lastY:y,lastTime:performance.now(),
       velocity:0,dy:0,stage:sheetStage,
@@ -1146,17 +1167,19 @@ function paintCoverGesture(){
   swipeFrame=0;
   const g=swipe;
   if(!g || stackAnimating || !stackCards)return;
-  const width=Math.max(1,stack.getBoundingClientRect().width);
+  // Geometry does not change during a gesture. Read it once on pointerdown
+  // instead of forcing a layout query on every animation frame.
+  const width=Math.max(1,g.width);
   const dx=Math.max(-width*1.15,Math.min(width*1.15,g.dx));
   const progress=Math.min(1,Math.abs(dx)/width);
   const front=stackCards.front,back1=stackCards.back1,back2=stackCards.back2,prevCard=stackCards.prev;
-  g.painted=true;
-  stack.classList.add('gesture-active');
-  const panels=[front,back1,back2,prevCard];
-  // Fade the travelling highlight in the same coordinate system as the art.
-  const rim=front.querySelector('.cover-rim');
-  if(rim)rim.style.opacity=String(Math.max(0,1-progress));
-  for(const panel of panels)panel.classList.add('gesture');
+  // Install the pointer-motion class only once per swipe.
+  if(!g.painted){
+    g.painted=true;
+    stack.classList.add('gesture-active');
+    for(const panel of [front,back1,back2,prevCard])panel.classList.add('gesture');
+  }
+  // Rim shadows are muted by a single class, not repainted every frame.
   if(dx<0){
     // Next: finger pulls current artwork left; the next artwork emerges beneath it.
     front.style.transform=`translate3d(${dx}px,0,0) rotate(${-progress*8}deg) scale(${1-.06*progress})`;
@@ -1190,6 +1213,8 @@ function resetCoverGesture(){
     card.style.opacity='';
     card.querySelector('.cover-rim')?.style.removeProperty('opacity');
   });
+  // An aborted swipe springs back for ~520ms before the light reappears.
+  wakeCoverGlow(740);
 }
 // A single pointer recogniser owns the cover. Lock an axis only after a small
 // movement, so vertical depth browsing cannot trigger horizontal song changes.
@@ -1201,7 +1226,7 @@ stack.addEventListener('pointerdown',e=>{
   if(e.isPrimary===false || stackAnimating)return;
   if(deckMode && deckTransitioning)stopDeckMotion();
   swipe={pointer:e.pointerId,x:e.clientX,y:e.clientY,dx:0,dy:0,axis:null,
-    lastY:e.clientY,lastTime:performance.now(),velocity:0,
+    width:stack.clientWidth,lastY:e.clientY,lastTime:performance.now(),velocity:0,
     startDepth:deckMode?deckPaintDepth:0,depthValue:deckPaintDepth,painted:false,
     tapOffset:deckMode?Number(e.target.closest?.('.deck-card')?.dataset.offset):NaN};
   stack.setPointerCapture(e.pointerId);
@@ -1217,7 +1242,7 @@ stack.addEventListener('pointermove',e=>{
     if(Math.abs(g.dy)>Math.abs(g.dx)*1.17){
       if(!enterDeckMode())return;
       g.axis='vertical';g.startDepth=deckDepth;
-    }else if(Math.abs(g.dx)>Math.abs(g.dy)*1.17)g.axis='horizontal';
+    }else if(Math.abs(g.dx)>Math.abs(g.dy)*1.17){g.axis='horizontal';if(!deckMode)muteCoverGlow();}
     else return;
   }
   if(g.axis==='vertical'){
@@ -1576,7 +1601,7 @@ async function readID3(file) {
     }
   }catch(err){console.warn('ID3 read failed',err)}return meta;
 }
-$('#add').onclick=()=>$('#files').click();
+// MP3 files are discovered by Android MediaStore. No extra library '+' button.
 $('#files').onchange=async event=>{
   const files=[...event.target.files].filter(f=>f.type.startsWith('audio/')||/\.(mp3|m4a|wav|flac|ogg)$/i.test(f.name));
   for(const file of files){
@@ -1608,29 +1633,32 @@ audio.onended=next;
 // 0.6: interpolate Media3 time, using a limited canvas refresh on modest devices.
 // No FFT, equalizer, canvas glow animation or per-frame cover CSS updates.
 const wave=$('#wave');
-const waveContext=wave.getContext('2d',{alpha:false});
+const waveContext=wave.getContext('2d',{alpha:true});
 let cachedWaveFill=null,cachedWaveWidth=-1;
 function frame(now) {
-  // Don't wake WebView 60 times a second while playback is paused or backgrounded.
-  if(document.hidden){setTimeout(()=>requestAnimationFrame(frame),700);return;}
-  if(!playing && !scrub)setTimeout(()=>requestAnimationFrame(frame),90);
-  else requestAnimationFrame(frame);
-  // ~24fps while playing, ~16fps on low-end devices, under 4fps on pause.
-  const speed=scrub ? 20 : (playing ? (lowPowerDevice?62:42) : 310);
+  const obscured=$('#libraryPanel').classList.contains('open') ||
+      $('#overlay').classList.contains('open') || $('#trackMenu').classList.contains('open');
+  // Schedule actual frames at the desired frequency instead of waking WebView
+  // 60 times/second and immediately discarding most frames.
+  const delay=document.hidden ? 1000 : obscured ? 500 :
+      scrub ? 26 : playing ? (lowPowerDevice ? 80 : 48) : 330;
+  setTimeout(()=>requestAnimationFrame(frame),delay);
+  if(document.hidden || obscured)return;
+  const speed=delay-1;
   if(now-lastWaveTime < speed)return;
   lastWaveTime=now;
   updateTimes(now);
-  const rect=wave.getBoundingClientRect();
-  if(!rect.width||!rect.height)return;
+  const width=wave.clientWidth,height=wave.clientHeight;
+  if(!width||!height)return;
   const ratio=Math.min(window.devicePixelRatio||1,1.1);
-  const w=Math.min(560,Math.round(rect.width*ratio));
-  const h=Math.min(90,Math.round(rect.height*ratio));
+  const w=Math.min(560,Math.round(width*ratio));
+  const h=Math.min(90,Math.round(height*ratio));
   if(wave.width!==w||wave.height!==h){wave.width=w;wave.height=h;cachedWaveFill=null;cachedWaveWidth=-1;}
   const c=waveContext;
   if(!c || !track())return;
   const dur=activeDuration();
   const progress=dur>0 ? Math.min(1,visiblePosition(now)/dur) : 0;
-  c.fillStyle='#4c463e';c.fillRect(0,0,w,h);
+  c.clearRect(0,0,w,h); // Leave unplayed area physically transparent.
   const filled=w*progress;
   if(!cachedWaveFill||cachedWaveWidth!==w){
     cachedWaveFill=c.createLinearGradient(0,0,w,0);
@@ -1655,7 +1683,9 @@ function frame(now) {
     }
     c.lineWidth=1.6;
     c.strokeStyle='#fff7e8b3';
-    c.shadowColor='#ffe0baaa';c.shadowBlur=lowPowerDevice?0:7;c.stroke();c.restore();
+    // CSS gives the timeline its static halo; a per-frame canvas shadow
+    // would force extra blur rasterization on every progress update.
+    c.stroke();c.restore();
   }
 }
 

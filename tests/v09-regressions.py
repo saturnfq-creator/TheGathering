@@ -45,9 +45,9 @@ with sync_playwright() as p:
     rim=page.locator('#stack .front .cover-rim').bounding_box()
     assert abs(front['x']-rim['x'])<2 and abs(front['y']-rim['y'])<2,(front,rim)
     opacity=float(page.locator('#stack .front .cover-rim').evaluate('(n)=>getComputedStyle(n).opacity'))
-    assert .1<opacity<.95,opacity
+    assert opacity<.1,opacity # v0.11: rim intentionally muted while dragging
     page.mouse.up()
-    page.wait_for_timeout(620)
+    page.wait_for_timeout(1600)
     assert page.evaluate('current')=='t1'
     assert float(page.locator('#stack .front .cover-rim').evaluate('(n)=>getComputedStyle(n).opacity'))>.9
     page.screenshot(path=str(root/'v09-rim-preview.png'))
@@ -65,10 +65,10 @@ with sync_playwright() as p:
     assert __import__('json').loads(calls[-1][1])==after
     assert page.locator('#queueList .queue-item').first.get_attribute('data-id')==after[1]
     assert len(page.locator('#queueList .queue-item').all())==20
-    # Re-press mixes the queue again, without activating a hidden random Next mode.
+    # In 0.10+, the second click toggles shuffle OFF and restores the order.
     page.locator('#shuffleQueue').click()
     second=page.evaluate('order.slice()')
-    assert set(second)==set(after) and second[0]==after[0] and second!=after
+    assert second==before[1:]+before[:1], (before,second) # current must stay first
     # The sheet should move as one layer, with a constant height and NO reflow.
     sheet=page.locator('#queueSheet')
     rect0=sheet.bounding_box()

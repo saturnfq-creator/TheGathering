@@ -378,6 +378,52 @@ html.lite-motion .album>.cover-rim{box-shadow:0 0 8px var(--aura-a,#bda18f88),
   box-shadow:inset 0 1px #fff2d58c,0 0 15px #e9b77d64;
   opacity:1;}
 .queue-shuffle-button:disabled{opacity:.28;}
+
+/* The Gathering v0.11: fewer repainting effects, unified translucent library. */
+/* Fixed background fills the whole app behind the glass bottom navigation;
+   content still has sufficient scroll padding to clear the navigation bar. */
+.library-panel{
+  top:0!important;bottom:0!important;left:0!important;right:0!important;
+  padding-bottom:calc(max(58px,12cqw) + max(1.2%,env(safe-area-inset-bottom)) + 28px)!important;
+}
+.library-tabs{background:transparent!important;}
+.lib-tab{
+  background:#ffffff11!important;
+  border:1px solid #ffffff32!important;
+  color:#d0c4b8!important;
+  box-shadow:inset 0 1px 0 #ffffff0c;
+}
+.lib-tab.active{
+  background:#ffffff23!important;
+  border-color:#f4dcbb80!important;
+  color:#f6e2c9!important;
+  box-shadow:inset 0 1px 0 #fff6e522,0 0 10px #d6b28d16;
+}
+/* The empty section of the glass timeline shows the background beneath it.
+   The canvas draws ONLY the played progress. */
+.timeline{background:transparent!important;}
+/* Keep the approved, bright travelling rim but suspend its expensive shadows
+   during swipes; restore it only after the card settles. */
+.stack.glow-muted .album>.cover-rim{
+  opacity:0!important;
+  transition:opacity 150ms ease-out!important;
+}
+.stack:not(.glow-muted) .album>.cover-rim{
+  transition:opacity 600ms cubic-bezier(.2,.8,.2,1)!important;
+}
+/* Avoid permanent full-card gradient scaling that forces compositing work even
+   while the user is not interacting. The ambient palette still tracks playback. */
+html.is-playing:not(.lite-motion) .stack::before{animation:none!important;}
+.stack::before{transform:none!important;}
+/* Shuffle should communicate its state through contrast, not button animation. */
+.queue-shuffle-button{transition:none!important;}
+.queue-shuffle-button.shuffle-pulse svg{animation:none!important;}
+/* A more forgiving gesture zone: captions, current track and header are handles,
+   but the actual queue remains scrollable and reorder handles are unchanged. */
+.sheet-header,.sheet-grab-area,.queue-now,.queue-caption{touch-action:none;}
+@media (max-width:520px){
+  .bottom-nav{backdrop-filter:blur(9px) saturate(1.1);-webkit-backdrop-filter:blur(9px) saturate(1.1);}
+}
 </style></head><body><main class="screen" id="screen">
 <div class="ambient-layer visible" id="ambientA" aria-hidden="true"></div>
 <div class="ambient-layer" id="ambientB" aria-hidden="true"></div>
@@ -391,7 +437,7 @@ html.lite-motion .album>.cover-rim{box-shadow:0 0 8px var(--aura-a,#bda18f88),
 
 <div class="overlay" id="overlay" aria-hidden="true"><div class="sheet" id="queueSheet" role="dialog" aria-label="Очередь воспроизведения"><div class="sheet-grab-area" id="queueGrab" aria-label="Свайп вверх — развернуть, вниз — свернуть"><span class="sheet-grip"></span></div><div class="sheet-header"><h2>Очередь воспроизведения</h2><button class="queue-shuffle-button" id="shuffleQueue" title="Включить перемешивание" aria-label="Включить перемешивание" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h2c6.5 0 7.5 14 14 14h2m0 0-3-3m3 3-3 3M3 19h2c2.8 0 4.6-2.5 6.2-5.3M14 9.1C15.7 6.8 17.7 5 21 5m0 0-3-3m3 3-3 3"/></svg></button></div><div class="queue-caption">СЕЙЧАС ИГРАЕТ</div><div class="queue-now" id="queueNow"></div><div class="queue-caption">ДАЛЬШЕ В ОЧЕРЕДИ</div><div class="queue-list" id="queueList"></div><div class="foot"><span id="queueCount">Треков: 0</span></div></div></div>
 <div class="library-panel" id="libraryPanel">
-  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><div class="library-head-actions"><button class="library-import" id="add" type="button" aria-label="Добавить MP3 из файлов" title="Импортировать MP3">＋</button><img class="brand-mark" src="brand_monochrome.png" alt=""/></div></div>
+  <div class="library-head"><h2 id="panelHeading">Библиотека</h2><div class="library-head-actions"><img class="brand-mark" src="brand_monochrome.png" alt=""/></div></div>
   <div id="libraryBrowse">
     <div class="library-search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><input class="search-input" id="librarySearch" placeholder="Найти трек, альбом или исполнителя" autocomplete="off" aria-label="Поиск музыки"/><button id="clearSearch" aria-label="Очистить поиск" hidden>×</button></div>
     <div class="library-tabs" id="libraryTabs"><button class="lib-tab active" data-mode="albums">Альбомы</button><button class="lib-tab" data-mode="artists">Исполнители</button><button class="lib-tab" data-mode="tracks">Треки</button></div>

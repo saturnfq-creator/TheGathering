@@ -72,7 +72,7 @@ with sync_playwright() as p:
     assert not button.evaluate('(e)=>e.classList.contains("is-active")')
     assert page.evaluate('window.bridgeCalls.at(-1)[0]')=='reorderQueue'
     assert page.locator('#queueSheet #add').count()==0
-    assert page.locator('#libraryPanel #add').count()==1
+    assert page.locator('#libraryPanel #add').count()==0 # Removed by request in 0.11
     assert page.locator('.nav-item[data-tab="Настройки"]').count()==1
     assert page.locator('.nav-item[data-tab="Профиль"]').count()==0
     page.screenshot(path=str(root/'v010-queue-preview.png'))

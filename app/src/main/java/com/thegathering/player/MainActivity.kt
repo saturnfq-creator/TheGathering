@@ -260,6 +260,9 @@ class MainActivity : ComponentActivity() {
     }
 
     inner class AndroidBridge {
+        @JavascriptInterface fun isLowRamDevice(): Boolean =
+            (getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)?.isLowRamDevice ?: false
+
         @JavascriptInterface fun scanLibrary() { scanAndSend() }
 
         @JavascriptInterface fun playQueue(playlistJson: String, selectedId: String) {
